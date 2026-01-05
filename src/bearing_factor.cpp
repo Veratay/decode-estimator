@@ -73,7 +73,7 @@ gtsam::Vector BearingToKnownLandmarkFactor::evaluateError(
             d2 = 1e-9;
         }
 
-        H->resize(1, 3);
+        *H = gtsam::Matrix::Zero(1, 3);
         // Jacobian in body frame using chain rule
         // Transform derivatives from local frame to body frame
         (*H)(0, 0) = -local_y / d2;  // d(error)/d(v_x)
@@ -83,13 +83,13 @@ gtsam::Vector BearingToKnownLandmarkFactor::evaluateError(
 
     // Compute error on SO(2) manifold: measured - predicted
     // Use simple angle difference wrapped to [-pi, pi]
-    gtsam::Rot2 predicted(predicted_theta);
     double error = measured_.theta() - predicted_theta;
-    
+
     // Normalize to [-pi, pi]
     while (error > M_PI) error -= 2 * M_PI;
     while (error < -M_PI) error += 2 * M_PI;
-    
+
+    // Return using GTSAM's Vector1 constructor
     return gtsam::Vector1(error);
 }
 

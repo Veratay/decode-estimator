@@ -30,19 +30,22 @@ message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Rerun visualization: ${DECODE_ENABLE_RERUN}")
 message(STATUS "Use local dependencies: ${DECODE_USE_LOCAL_DEPS}")
 
-# Find Eigen3 (required for GTSAM)
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-message(STATUS "Found Eigen3: ${EIGEN3_INCLUDE_DIR}")
-
 # Build dependencies from source or find system packages
 if(DECODE_USE_LOCAL_DEPS)
-    message(STATUS "Building GTSAM from source...")
+    message(STATUS "Building GTSAM and Eigen from source...")
     include(BuildGTSAMOnly)
+    message(STATUS "Local Eigen: ${EIGEN3_INCLUDE_DIR}")
     message(STATUS "Local GTSAM: ${GTSAM_INCLUDE_DIR}")
 else()
-    # Find system GTSAM (includes Eigen)
+    # Find system Eigen3 (required for GTSAM)
+    find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+    message(STATUS "Found Eigen3: ${EIGEN3_INCLUDE_DIR}")
+    # Find system GTSAM
     find_package(GTSAM REQUIRED)
     message(STATUS "Found GTSAM: ${GTSAM_INCLUDE_DIR}")
+    # Find TBB to ensure consistent allocator usage
+    find_package(TBB 4.4 COMPONENTS tbb tbbmalloc REQUIRED)
+    message(STATUS "Found TBB: ${TBB_INCLUDE_DIRS}")
 endif()
 
 # Optional: Find Rerun SDK
@@ -56,8 +59,8 @@ if(DECODE_ENABLE_RERUN)
     message(STATUS "Rerun SDK enabled")
 endif()
 
-# Create library
-add_library(${PROJECT_NAME}
+# Create library (STATIC for CM4 deployment)
+add_library(${PROJECT_NAME} STATIC
     src/pose_estimator.cpp
     src/bearing_factor.cpp
     src/landmark_map.cpp
@@ -67,19 +70,34 @@ add_library(${PROJECT_NAME}
 # Add dependencies on external projects if building locally
 if(DECODE_USE_LOCAL_DEPS)
     add_dependencies(${PROJECT_NAME} gtsam_build)
+    target_link_libraries(${PROJECT_NAME}
+        PUBLIC
+            ${TBB_LIBRARIES}
+    )
+    target_include_directories(${PROJECT_NAME} PUBLIC ${TBB_INCLUDE_DIRS})
 endif()
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
-        ${EIGEN3_INCLUDE_DIR}
 )
 
-# Link GTSAM
+# Add Eigen include directory (use BUILD_INTERFACE for local deps to avoid install issues)
+if(DECODE_USE_LOCAL_DEPS)
+    # Use GTSAM's bundled Eigen for ABI compatibility
+    target_include_directories(${PROJECT_NAME} PUBLIC
+        $<BUILD_INTERFACE:${GTSAM_EIGEN_INCLUDE_DIR}>)
+else()
+    target_include_directories(${PROJECT_NAME} PUBLIC ${EIGEN3_INCLUDE_DIR})
+endif()
+
+# Link GTSAM and TBB for consistent allocator usage
 target_link_libraries(${PROJECT_NAME}
     PUBLIC
         gtsam
+        tbb
+        tbbmalloc
 )
 
 # Conditional Rerun support
@@ -100,14 +118,11 @@ else()
 endif()
 
 # Performance flags for Release builds
+# Use -O2 instead of -O3 to avoid Eigen ABI issues with aggressive optimizations
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(${PROJECT_NAME} PRIVATE
-        -O3
+        -O2
         -DNDEBUG
-        # ABI compatibility flags to prevent memory corruption
-        -fno-strict-aliasing
-        -fno-ipa-sra
-        -fno-tree-vectorize
     )
     # Only use -march=native on x86_64, skip on ARM for cross-compilation compatibility
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
