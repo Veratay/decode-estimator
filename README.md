@@ -52,6 +52,9 @@ cd /path/to/decode-estimator
 
 # Run example
 ./build/examples/simple_localization
+
+# Build and run example with Rerun visualization
+./scripts/run_example.sh
 ```
 
 ### Cross-compiling for Compute Module 4
