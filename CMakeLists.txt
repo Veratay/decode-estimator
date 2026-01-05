@@ -13,6 +13,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(DECODE_ENABLE_RERUN "Enable Rerun visualization" OFF)
 option(DECODE_BUILD_EXAMPLES "Build example programs" ON)
 option(DECODE_BUILD_TESTS "Build unit tests" ON)
+option(DECODE_USE_LOCAL_DEPS "Build Eigen and GTSAM from source" OFF)
+
+# Set parallel build level to nproc if not specified
+if(NOT CMAKE_BUILD_PARALLEL_LEVEL)
+    execute_process(COMMAND nproc OUTPUT_VARIABLE NPROC OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(CMAKE_BUILD_PARALLEL_LEVEL ${NPROC} CACHE STRING "Number of parallel build jobs")
+endif()
 
 # Release mode for performance (GTSAM is up to 10x faster in Release)
 if(NOT CMAKE_BUILD_TYPE)
@@ -21,11 +28,22 @@ endif()
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "Rerun visualization: ${DECODE_ENABLE_RERUN}")
+message(STATUS "Use local dependencies: ${DECODE_USE_LOCAL_DEPS}")
 
-# Find GTSAM
-find_package(GTSAM REQUIRED)
+# Find Eigen3 (required for GTSAM)
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+message(STATUS "Found Eigen3: ${EIGEN3_INCLUDE_DIR}")
 
-message(STATUS "Found GTSAM: ${GTSAM_INCLUDE_DIR}")
+# Build dependencies from source or find system packages
+if(DECODE_USE_LOCAL_DEPS)
+    message(STATUS "Building GTSAM from source...")
+    include(BuildGTSAMOnly)
+    message(STATUS "Local GTSAM: ${GTSAM_INCLUDE_DIR}")
+else()
+    # Find system GTSAM (includes Eigen)
+    find_package(GTSAM REQUIRED)
+    message(STATUS "Found GTSAM: ${GTSAM_INCLUDE_DIR}")
+endif()
 
 # Optional: Find Rerun SDK
 if(DECODE_ENABLE_RERUN)
@@ -46,10 +64,16 @@ add_library(${PROJECT_NAME}
     src/visualization.cpp
 )
 
+# Add dependencies on external projects if building locally
+if(DECODE_USE_LOCAL_DEPS)
+    add_dependencies(${PROJECT_NAME} gtsam_build)
+endif()
+
 target_include_directories(${PROJECT_NAME}
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+        ${EIGEN3_INCLUDE_DIR}
 )
 
 # Link GTSAM
@@ -80,6 +104,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(${PROJECT_NAME} PRIVATE
         -O3
         -DNDEBUG
+        # ABI compatibility flags to prevent memory corruption
+        -fno-strict-aliasing
+        -fno-ipa-sra
+        -fno-tree-vectorize
     )
     # Only use -march=native on x86_64, skip on ARM for cross-compilation compatibility
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
