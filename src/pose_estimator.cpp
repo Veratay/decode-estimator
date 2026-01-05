@@ -1,10 +1,12 @@
 #include "decode_estimator/pose_estimator.hpp"
+#include "decode_estimator/range_factor.hpp"
 #include "decode_estimator/visualization.hpp"
 
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -81,6 +83,7 @@ void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
     current_pose_ = gtsam::Pose2(initial_x, initial_y, initial_theta);
     current_timestamp_ = 0.0;
     pending_bearings_.clear();
+    pending_distances_.clear();
 
     // Clear any pending factors/values
     pending_graph_.resize(0);
@@ -123,6 +126,7 @@ void PoseEstimator::reset() {
     current_pose_ = gtsam::Pose2();
     current_timestamp_ = 0.0;
     pending_bearings_.clear();
+    pending_distances_.clear();
     pending_graph_.resize(0);
     pending_values_.clear();
     landmark_map_.clear();
@@ -178,6 +182,16 @@ void PoseEstimator::addBearingMeasurements(const std::vector<BearingMeasurement>
     pending_bearings_.insert(pending_bearings_.end(), bearings.begin(), bearings.end());
 }
 
+void PoseEstimator::addDistanceMeasurement(const DistanceMeasurement& distance) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_distances_.push_back(distance);
+}
+
+void PoseEstimator::addDistanceMeasurements(const std::vector<DistanceMeasurement>& distances) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_distances_.insert(pending_distances_.end(), distances.begin(), distances.end());
+}
+
 PoseEstimate PoseEstimator::update() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -190,6 +204,45 @@ PoseEstimate PoseEstimator::update() {
         (void)point;
         visible_tags.insert(id);
     }
+
+    // Process pending distance measurements
+    for (const auto& distance : pending_distances_) {
+        auto landmark_opt = landmark_map_.getLandmark(distance.tag_id);
+        if (!landmark_opt) {
+            continue;
+        }
+
+        if (distance.distance_m <= 0.0) {
+            continue;
+        }
+
+        double sigma = (distance.uncertainty_m > 0) ? distance.uncertainty_m
+                                                     : config_.default_distance_sigma;
+        double dx = landmark_opt->x() - current_pose_.x();
+        double dy = landmark_opt->y() - current_pose_.y();
+        double predicted_range = std::sqrt(dx * dx + dy * dy);
+        double min_sigma = predicted_range * config_.default_bearing_sigma * 3.0;
+        if (sigma < min_sigma) {
+            sigma = min_sigma;
+        }
+
+        double range_residual = distance.distance_m - predicted_range;
+        if (std::abs(range_residual) > 3.0 * sigma) {
+            continue;
+        }
+        auto range_noise = gtsam::noiseModel::Isotropic::Sigma(1, sigma);
+
+        pending_graph_.add(RangeToKnownLandmarkFactor(
+            X(current_pose_idx_), *landmark_opt, distance.distance_m, range_noise));
+
+        std::cout << "distance tag=" << distance.tag_id
+                  << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
+                  << ", " << current_pose_.theta() << ")"
+                  << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
+                  << " distance_m=" << distance.distance_m
+                  << std::endl;
+    }
+    pending_distances_.clear();
 
     // Process pending bearing measurements
     for (const auto& bearing : pending_bearings_) {

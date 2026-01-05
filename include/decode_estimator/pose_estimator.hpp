@@ -35,6 +35,8 @@ struct EstimatorConfig {
 
     /// Default bearing uncertainty if not provided per measurement (radians, ~3 degrees)
     double default_bearing_sigma = 0.05;
+    /// Default distance uncertainty if not provided per measurement (meters)
+    double default_distance_sigma = 0.2;
 
     // Visualization
     bool enable_visualization = false;
@@ -44,9 +46,9 @@ struct EstimatorConfig {
 /**
  * @brief 2D robot pose estimator using GTSAM iSAM2
  *
- * Fuses odometry (BetweenFactor) with bearing measurements to known
- * AprilTag landmarks (custom BearingToKnownLandmarkFactor) for accurate
- * localization that corrects odometry drift.
+ * Fuses odometry (BetweenFactor) with bearing and distance measurements to known
+ * AprilTag landmarks (custom factors) for accurate localization that corrects
+ * odometry drift.
  *
  * Thread-safe: all public methods are mutex-protected.
  */
@@ -96,6 +98,18 @@ public:
      * @param bearings  Vector of bearing measurements
      */
     void addBearingMeasurements(const std::vector<BearingMeasurement>& bearings);
+
+    /**
+     * @brief Add a distance measurement for the next update
+     * @param distance  Distance measurement to known AprilTag
+     */
+    void addDistanceMeasurement(const DistanceMeasurement& distance);
+
+    /**
+     * @brief Add multiple distance measurements for the next update
+     * @param distances  Vector of distance measurements
+     */
+    void addDistanceMeasurements(const std::vector<DistanceMeasurement>& distances);
 
     /**
      * @brief Perform iSAM2 update
@@ -173,6 +187,7 @@ private:
 
     // Pending bearing measurements for next update
     std::vector<BearingMeasurement> pending_bearings_;
+    std::vector<DistanceMeasurement> pending_distances_;
 
     // Thread safety
     mutable std::mutex mutex_;

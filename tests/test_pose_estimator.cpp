@@ -123,6 +123,7 @@ TEST_F(PoseEstimatorTest, OdometryWithRotation) {
 TEST_F(PoseEstimatorTest, BearingMeasurement) {
     EstimatorConfig config;
     config.default_bearing_sigma = 0.01;  // Tight noise
+    config.default_distance_sigma = 0.1;
     PoseEstimator estimator(config);
 
     estimator.initialize(landmarks_, 5.0, 5.0, 0.0);
@@ -145,6 +146,14 @@ TEST_F(PoseEstimatorTest, BearingMeasurement) {
     bearing.timestamp = 0.1;
 
     estimator.addBearingMeasurement(bearing);
+
+    DistanceMeasurement distance;
+    distance.tag_id = 4;
+    distance.distance_m = std::sqrt(5.0 * 5.0 + 5.0 * 5.0);
+    distance.uncertainty_m = 0.1;
+    distance.timestamp = 0.1;
+
+    estimator.addDistanceMeasurement(distance);
     PoseEstimate est = estimator.update();
 
     // Position should still be close to (5, 5)
@@ -157,6 +166,7 @@ TEST_F(PoseEstimatorTest, DriftCorrection) {
     EstimatorConfig config;
     config.odom_sigma_xy = 0.05;      // Relatively noisy odometry
     config.default_bearing_sigma = 0.02;  // Tight bearing
+    config.default_distance_sigma = 0.1;
     PoseEstimator estimator(config);
 
     // Start at known position
@@ -201,6 +211,14 @@ TEST_F(PoseEstimatorTest, DriftCorrection) {
                 bearing.timestamp = i * 0.1;
 
                 estimator.addBearingMeasurement(bearing);
+
+                DistanceMeasurement distance;
+                distance.tag_id = lm.id;
+                distance.distance_m = std::sqrt(dx * dx + dy * dy);
+                distance.uncertainty_m = 0.1;
+                distance.timestamp = i * 0.1;
+
+                estimator.addDistanceMeasurement(distance);
             }
         }
 

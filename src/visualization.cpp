@@ -72,13 +72,16 @@ void Visualizer::logTrajectory(const std::vector<PoseEstimate> &trajectory) {
 void Visualizer::logBearingMeasurement(const PoseEstimate &pose,
                                        const gtsam::Point2 &landmark,
                                        int32_t tag_id, double bearing_rad) {
-  (void)bearing_rad;
+  (void)landmark;
 
-  // Draw a ray from robot to the landmark position when observed.
+  // Draw a fixed-length ray from the robot in the measured bearing direction.
+  const float arrow_len = 0.75f;
+  double global_bearing = pose.theta + bearing_rad;
+
   rec_.log("world/measurements/bearing_ray_" + std::to_string(tag_id),
            rerun::Arrows3D::from_vectors(
-               {{static_cast<float>(landmark.x() - pose.x),
-                 static_cast<float>(landmark.y() - pose.y), 0.0f}})
+               {{static_cast<float>(arrow_len * std::cos(global_bearing)),
+                 static_cast<float>(arrow_len * std::sin(global_bearing)), 0.0f}})
                .with_origins({{static_cast<float>(pose.x),
                                static_cast<float>(pose.y), 0.0f}})
                .with_colors({rerun::Color(255, 255, 0, 200)})); // Yellow, opaque

@@ -119,6 +119,7 @@ endif()
 add_library(decode_estimator STATIC
     src/pose_estimator.cpp
     src/bearing_factor.cpp
+    src/range_factor.cpp
     src/landmark_map.cpp
     src/visualization.cpp
 )

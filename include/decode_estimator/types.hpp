@@ -22,6 +22,14 @@ struct BearingMeasurement {
     double timestamp;        ///< Timestamp (seconds)
 };
 
+/// AprilTag distance measurement in robot frame
+struct DistanceMeasurement {
+    int32_t tag_id;         ///< AprilTag ID
+    double distance_m;      ///< Range to tag (meters)
+    double uncertainty_m;   ///< 1-sigma uncertainty (meters)
+    double timestamp;       ///< Timestamp (seconds)
+};
+
 /// Robot pose estimate
 struct PoseEstimate {
     double x;         ///< X position in field coordinates (meters)

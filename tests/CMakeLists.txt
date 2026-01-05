@@ -14,6 +14,16 @@ target_link_libraries(test_bearing_factor
 )
 add_test(NAME test_bearing_factor COMMAND test_bearing_factor)
 
+# Test range factor
+add_executable(test_range_factor test_range_factor.cpp)
+target_link_libraries(test_range_factor
+    PRIVATE
+        decode_estimator
+        GTest::gtest
+        GTest::gtest_main
+)
+add_test(NAME test_range_factor COMMAND test_range_factor)
+
 # Test pose estimator
 add_executable(test_pose_estimator test_pose_estimator.cpp)
 target_link_libraries(test_pose_estimator

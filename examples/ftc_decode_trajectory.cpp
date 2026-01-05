@@ -26,6 +26,7 @@ constexpr int NUM_ITERATIONS = 2000;
 constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
 constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
 constexpr double BEARING_NOISE = 0.025;     // radians (~1.4 degrees)
+constexpr double DISTANCE_NOISE = 0.12;     // meters (less confident than bearing)
 
 // Detection parameters
 constexpr double DETECTION_RANGE = 3.0;     // meters
@@ -75,6 +76,7 @@ int main() {
     std::normal_distribution<> odom_noise_xy(0, ODOM_NOISE_XY);
     std::normal_distribution<> odom_noise_theta(0, ODOM_NOISE_THETA);
     std::normal_distribution<> bearing_noise(0, BEARING_NOISE);
+    std::normal_distribution<> distance_noise(0, DISTANCE_NOISE);
 
     // Configure estimator
     decode::EstimatorConfig config;
@@ -83,6 +85,7 @@ int main() {
     config.odom_sigma_xy = 0.01;
     config.odom_sigma_theta = 0.005;
     config.default_bearing_sigma = 0.05;
+    config.default_distance_sigma = 0.2;
 
 #if DECODE_ENABLE_RERUN
     config.enable_visualization = true;
@@ -198,6 +201,7 @@ int main() {
                 if (dist < DETECTION_RANGE) {
                     double true_bearing = computeBearing(true_x, true_y, true_theta, lm.x, lm.y);
                     double measured_bearing = true_bearing + bearing_noise(gen);
+                    double measured_distance = dist + distance_noise(gen);
 
                     decode::BearingMeasurement bearing;
                     bearing.tag_id = lm.id;
@@ -206,6 +210,14 @@ int main() {
                     bearing.timestamp = time;
 
                     estimator.addBearingMeasurement(bearing);
+
+                    decode::DistanceMeasurement distance;
+                    distance.tag_id = lm.id;
+                    distance.distance_m = measured_distance;
+                    distance.uncertainty_m = DISTANCE_NOISE * 1.5;
+                    distance.timestamp = time;
+
+                    estimator.addDistanceMeasurement(distance);
                 }
             }
         }
