@@ -106,7 +106,12 @@ find_package(Boost REQUIRED COMPONENTS serialization system filesystem thread pr
 find_package(Threads REQUIRED)
 
 if(DECODE_ENABLE_RERUN)
-    find_package(rerun_sdk CONFIG REQUIRED)
+    FetchContent_Declare(
+        rerun_sdk
+        URL https://github.com/rerun-io/rerun/releases/latest/download/rerun_cpp_sdk.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(rerun_sdk)
 endif()
 
 add_library(decode_estimator STATIC
