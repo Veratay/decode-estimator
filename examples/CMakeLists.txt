@@ -2,3 +2,6 @@
 
 add_executable(simple_localization simple_localization.cpp)
 target_link_libraries(simple_localization PRIVATE decode_estimator)
+
+add_executable(ftc_decode_trajectory ftc_decode_trajectory.cpp)
+target_link_libraries(ftc_decode_trajectory PRIVATE decode_estimator)

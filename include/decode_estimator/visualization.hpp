@@ -5,7 +5,9 @@
 
 #include <gtsam/geometry/Point2.h>
 
+#include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #if DECODE_ENABLE_RERUN
@@ -36,10 +38,25 @@ public:
     /// Log full trajectory (all poses)
     void logTrajectory(const std::vector<PoseEstimate>& trajectory);
 
-    /// Log bearing measurement (line from pose to landmark)
+    /// Log bearing measurement (ray from robot to landmark)
     void logBearingMeasurement(const PoseEstimate& pose,
                                 const gtsam::Point2& landmark,
-                                int32_t tag_id);
+                                int32_t tag_id,
+                                double bearing_rad);
+
+    /// Log rays from robot to landmarks (use NaN for out-of-view rays)
+    void logLandmarkRays(const LandmarkMap& landmarks,
+                         const PoseEstimate& pose,
+                         int64_t step,
+                         const std::unordered_set<int32_t>& visible_tags);
+
+    /// Log time series metrics (errors, estimated/true positions)
+    void logTimeSeriesMetrics(int64_t step,
+                              const PoseEstimate& estimate,
+                              const PoseEstimate& true_pose,
+                              const PoseEstimate& odom_pose,
+                              double position_error,
+                              double odom_error);
 
     /// Log uncertainty ellipse at current pose
     void logUncertaintyEllipse(const PoseEstimate& pose, size_t pose_idx);
@@ -65,7 +82,18 @@ public:
     void logTrajectory(const std::vector<PoseEstimate>& /*trajectory*/) {}
     void logBearingMeasurement(const PoseEstimate& /*pose*/,
                                 const gtsam::Point2& /*landmark*/,
-                                int32_t /*tag_id*/) {}
+                                int32_t /*tag_id*/,
+                                double /*bearing_rad*/) {}
+    void logLandmarkRays(const LandmarkMap& /*landmarks*/,
+                         const PoseEstimate& /*pose*/,
+                         int64_t /*step*/,
+                         const std::unordered_set<int32_t>& /*visible_tags*/) {}
+    void logTimeSeriesMetrics(int64_t /*step*/,
+                              const PoseEstimate& /*estimate*/,
+                              const PoseEstimate& /*true_pose*/,
+                              const PoseEstimate& /*odom_pose*/,
+                              double /*position_error*/,
+                              double /*odom_error*/) {}
     void logUncertaintyEllipse(const PoseEstimate& /*pose*/, size_t /*pose_idx*/) {}
 };
 

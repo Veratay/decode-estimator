@@ -5,6 +5,7 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
+#include <iostream>
 #include <stdexcept>
 
 // Use symbol shorthand for poses
@@ -184,6 +185,12 @@ PoseEstimate PoseEstimator::update() {
         throw std::runtime_error("PoseEstimator not initialized");
     }
 
+    std::unordered_set<int32_t> visible_tags;
+    for (const auto& [id, point] : landmark_map_.getAllLandmarks()) {
+        (void)point;
+        visible_tags.insert(id);
+    }
+
     // Process pending bearing measurements
     for (const auto& bearing : pending_bearings_) {
         auto landmark_opt = landmark_map_.getLandmark(bearing.tag_id);
@@ -209,9 +216,17 @@ PoseEstimate PoseEstimator::update() {
             est.theta = current_pose_.theta();
             est.timestamp = current_timestamp_;
             est.has_covariance = false;
-            visualizer_->logBearingMeasurement(est, *landmark_opt, bearing.tag_id);
+            visualizer_->logBearingMeasurement(est, *landmark_opt, bearing.tag_id,
+                                               bearing.bearing_rad);
         }
 #endif
+
+        std::cout << "bearing tag=" << bearing.tag_id
+                  << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
+                  << ", " << current_pose_.theta() << ")"
+                  << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
+                  << " bearing_rad=" << bearing.bearing_rad
+                  << std::endl;
     }
     pending_bearings_.clear();
 
@@ -236,11 +251,41 @@ PoseEstimate PoseEstimator::update() {
 
 #if DECODE_ENABLE_RERUN
     if (visualizer_) {
+        visualizer_->logLandmarkRays(landmark_map_, result,
+                                     static_cast<int64_t>(current_pose_idx_),
+                                     visible_tags);
         visualizer_->logPose(result, current_pose_idx_);
     }
 #endif
 
     return result;
+}
+
+void PoseEstimator::logTimeSeriesMetrics(int64_t step,
+                                         const PoseEstimate& estimate,
+                                         const PoseEstimate& true_pose,
+                                         const PoseEstimate& odom_pose,
+                                         double position_error,
+                                         double odom_error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+#if DECODE_ENABLE_RERUN
+    if (visualizer_) {
+        visualizer_->logTimeSeriesMetrics(step,
+                                          estimate,
+                                          true_pose,
+                                          odom_pose,
+                                          position_error,
+                                          odom_error);
+    }
+#else
+    (void)step;
+    (void)estimate;
+    (void)true_pose;
+    (void)odom_pose;
+    (void)position_error;
+    (void)odom_error;
+#endif
 }
 
 PoseEstimate PoseEstimator::getCurrentEstimate() const {

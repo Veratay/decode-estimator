@@ -11,8 +11,10 @@
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 
+#include <cstdint>
 #include <memory>
 #include <mutex>
+#include <unordered_set>
 #include <vector>
 
 namespace decode {
@@ -122,6 +124,18 @@ public:
 
     /// Get landmark map (for visualization/debugging)
     const LandmarkMap& getLandmarkMap() const;
+
+    /// Log rays from robot to landmarks (visualization only)
+    void logLandmarkRays(const PoseEstimate& pose,
+                         const std::unordered_set<int32_t>& visible_tags);
+
+    /// Log metrics as time series data (visualization only)
+    void logTimeSeriesMetrics(int64_t step,
+                              const PoseEstimate& estimate,
+                              const PoseEstimate& true_pose,
+                              const PoseEstimate& odom_pose,
+                              double position_error,
+                              double odom_error);
 
 private:
     /// Create noise models from config
