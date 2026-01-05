@@ -15,9 +15,9 @@ A factor graph-based 2D robot pose estimator using GTSAM and iSAM2. Fuses odomet
 ### Required
 - CMake 3.16+
 - C++17 compiler
-- GTSAM 4.x
-- Eigen3
-- Intel TBB (required by GTSAM builds with TBB enabled)
+- Boost (serialization, system, filesystem, thread, program_options, date_time, timer, chrono, regex)
+  - GTSAM and Eigen are built locally as static libs (no system installs required).
+  - GTSAM is built without TBB.
 
 ### Optional
 - Rerun SDK (for visualization)
@@ -28,13 +28,10 @@ A factor graph-based 2D robot pose estimator using GTSAM and iSAM2. Fuses odomet
 ### Ubuntu/Debian
 
 ```bash
-# Install GTSAM
-sudo apt-get install libgtsam-dev
+# Build essentials + Boost
+sudo apt-get install build-essential cmake libboost-all-dev
 
-# Install Eigen and TBB (required by GTSAM)
-sudo apt-get install libeigen3-dev libtbb-dev
-
-# Install Google Test (optional, for tests)
+# Google Test (optional, for tests)
 sudo apt-get install libgtest-dev
 ```
 
@@ -44,42 +41,32 @@ sudo apt-get install libgtest-dev
 # Clone the repository
 cd /path/to/decode-estimator
 
-# Create build directory
-mkdir build && cd build
+# Build (Eigen + GTSAM are built locally as ExternalProject deps)
+./scripts/build.sh
 
-# Configure (without Rerun visualization)
-cmake -DCMAKE_BUILD_TYPE=Release ..
+# Build with tests
+./scripts/build.sh --tests
 
-# Or with Rerun visualization
-cmake -DCMAKE_BUILD_TYPE=Release -DDECODE_ENABLE_RERUN=ON ..
-
-# Build
-cmake --build . -j$(nproc)
-
-# Or use helper scripts from the repo root
-./scripts/build.sh --release
-
-# Run tests (if GTest is available)
-ctest --output-on-failure
+# Run tests (if built)
+./scripts/test.sh
 
 # Run example
-./examples/simple_localization
-
-# Or build (if needed) and run the example
-./scripts/run_example.sh
+./build/examples/simple_localization
 ```
 
 ### Cross-compiling for Compute Module 4
 
 ```bash
-# Configure without Rerun and with ARM optimization
-cmake -DCMAKE_BUILD_TYPE=Release \
-      -DDECODE_ENABLE_RERUN=OFF \
-      -DCMAKE_CXX_FLAGS="-march=armv8-a" \
-      ..
-
-cmake --build . -j4
+# Cross-compile with toolchain
+CM4_SYSROOT=/path/to/sysroot \
+CM4_TOOLCHAIN_PREFIX=aarch64-linux-gnu \
+./scripts/build_cm4.sh
 ```
+
+### Notes
+
+- The build scripts fetch Eigen/GTSAM from their upstream git repositories; network access is required the first time.
+- Tests are host-only and disabled by default.
 
 ## Usage
 

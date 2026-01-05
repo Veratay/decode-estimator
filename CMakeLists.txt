@@ -1,161 +1,182 @@
 cmake_minimum_required(VERSION 3.16)
-project(decode_estimator VERSION 1.0.0 LANGUAGES CXX)
 
-# Prefer local CMake modules to avoid broken system GTSAM config packages.
-list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+project(decode_estimator LANGUAGES CXX)
 
-# C++17 required for Rerun SDK
+option(DECODE_ENABLE_RERUN "Enable Rerun visualization" OFF)
+option(DECODE_BUILD_TESTS "Build unit tests (host only)" OFF)
+option(DECODE_BUILD_EXAMPLES "Build examples" ON)
+option(DECODE_FORCE_STATIC "Prefer static libraries" ON)
+option(DECODE_FETCH_GTEST "Fetch GoogleTest locally when tests enabled" ON)
+
+set(DECODE_EIGEN_GIT_TAG "3.4.0" CACHE STRING "Eigen git tag")
+set(DECODE_GTSAM_GIT_TAG "4.2.0" CACHE STRING "GTSAM git tag")
+set(DECODE_GTEST_GIT_TAG "v1.14.0" CACHE STRING "GoogleTest git tag")
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Build options
-option(DECODE_ENABLE_RERUN "Enable Rerun visualization" OFF)
-option(DECODE_BUILD_EXAMPLES "Build example programs" ON)
-option(DECODE_BUILD_TESTS "Build unit tests" ON)
-option(DECODE_USE_LOCAL_DEPS "Build Eigen and GTSAM from source" OFF)
-
-# Set parallel build level to nproc if not specified
-if(NOT CMAKE_BUILD_PARALLEL_LEVEL)
-    execute_process(COMMAND nproc OUTPUT_VARIABLE NPROC OUTPUT_STRIP_TRAILING_WHITESPACE)
-    set(CMAKE_BUILD_PARALLEL_LEVEL ${NPROC} CACHE STRING "Number of parallel build jobs")
+if(DECODE_FORCE_STATIC)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    if(UNIX AND NOT APPLE)
+        set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ${CMAKE_FIND_LIBRARY_SUFFIXES})
+    endif()
 endif()
 
-# Release mode for performance (GTSAM is up to 10x faster in Release)
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
+list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG OFF)
+
+include(ExternalProject)
+include(FetchContent)
+
+set(DECODE_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
+set(DECODE_EIGEN_INSTALL_DIR "${DECODE_DEPS_DIR}/eigen-install")
+set(DECODE_GTSAM_INSTALL_DIR "${DECODE_DEPS_DIR}/gtsam-install")
+file(MAKE_DIRECTORY
+    "${DECODE_EIGEN_INSTALL_DIR}/include/eigen3"
+    "${DECODE_GTSAM_INSTALL_DIR}/include"
+    "${DECODE_GTSAM_INSTALL_DIR}/lib"
+)
+
+ExternalProject_Add(
+    eigen_ep
+    GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+    GIT_TAG ${DECODE_EIGEN_GIT_TAG}
+    UPDATE_DISCONNECTED 1
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=${DECODE_EIGEN_INSTALL_DIR}
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DBUILD_TESTING=OFF
+        -DEIGEN_BUILD_DOC=OFF
+        -DEIGEN_BUILD_PKGCONFIG=OFF
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+)
+
+add_library(Eigen3::Eigen INTERFACE IMPORTED)
+set(EIGEN3_INCLUDE_DIR "${DECODE_EIGEN_INSTALL_DIR}/include/eigen3")
+set_target_properties(Eigen3::Eigen PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${EIGEN3_INCLUDE_DIR}"
+)
+add_dependencies(Eigen3::Eigen eigen_ep)
+
+set(_gtsam_cmake_args
+    -DCMAKE_INSTALL_PREFIX=${DECODE_GTSAM_INSTALL_DIR}
+    -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    -DGTSAM_USE_SYSTEM_EIGEN=ON
+    -DEigen3_DIR=${DECODE_EIGEN_INSTALL_DIR}/share/eigen3/cmake
+    -DGTSAM_BUILD_SHARED_LIBS=OFF
+    -DBUILD_SHARED_LIBS=OFF
+    -DGTSAM_BUILD_TESTS=OFF
+    -DGTSAM_BUILD_UNSTABLE=OFF
+    -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF
+    -DGTSAM_BUILD_TYPE_POSTFIXES=OFF
+    -DGTSAM_USE_TBB=OFF
+    -DGTSAM_WITH_TBB=OFF
+    -DGTSAM_WITH_EIGEN_MKL=OFF
+    -DGTSAM_WITH_EIGEN_MKL_OPENMP=OFF
+    -DGTSAM_BUILD_PYTHON=OFF
+)
+if(CMAKE_TOOLCHAIN_FILE)
+    list(APPEND _gtsam_cmake_args -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
 endif()
 
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "Rerun visualization: ${DECODE_ENABLE_RERUN}")
-message(STATUS "Use local dependencies: ${DECODE_USE_LOCAL_DEPS}")
+ExternalProject_Add(
+    gtsam_ep
+    GIT_REPOSITORY https://github.com/borglab/gtsam.git
+    GIT_TAG ${DECODE_GTSAM_GIT_TAG}
+    UPDATE_DISCONNECTED 1
+    DEPENDS eigen_ep
+    CMAKE_ARGS ${_gtsam_cmake_args}
+)
 
-# Build dependencies from source or find system packages
-if(DECODE_USE_LOCAL_DEPS)
-    message(STATUS "Building GTSAM and Eigen from source...")
-    include(BuildGTSAMOnly)
-    message(STATUS "Local Eigen: ${EIGEN3_INCLUDE_DIR}")
-    message(STATUS "Local GTSAM: ${GTSAM_INCLUDE_DIR}")
-else()
-    # Find system Eigen3 (required for GTSAM)
-    find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-    message(STATUS "Found Eigen3: ${EIGEN3_INCLUDE_DIR}")
-    # Find system GTSAM
-    find_package(GTSAM REQUIRED)
-    message(STATUS "Found GTSAM: ${GTSAM_INCLUDE_DIR}")
-    # Find TBB to ensure consistent allocator usage
-    find_package(TBB 4.4 COMPONENTS tbb tbbmalloc REQUIRED)
-    message(STATUS "Found TBB: ${TBB_INCLUDE_DIRS}")
-endif()
+add_library(gtsam STATIC IMPORTED GLOBAL)
+set_target_properties(gtsam PROPERTIES
+    IMPORTED_LOCATION "${DECODE_GTSAM_INSTALL_DIR}/lib/libgtsam.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${DECODE_GTSAM_INSTALL_DIR}/include"
+)
+add_dependencies(gtsam gtsam_ep)
 
-# Optional: Find Rerun SDK
+add_library(metis-gtsam STATIC IMPORTED GLOBAL)
+set_target_properties(metis-gtsam PROPERTIES
+    IMPORTED_LOCATION "${DECODE_GTSAM_INSTALL_DIR}/lib/libmetis-gtsam.a"
+)
+add_dependencies(metis-gtsam gtsam_ep)
+
+find_package(Boost REQUIRED COMPONENTS serialization system filesystem thread program_options date_time timer chrono regex)
+find_package(Threads REQUIRED)
+
 if(DECODE_ENABLE_RERUN)
-    include(FetchContent)
-    FetchContent_Declare(
-        rerun_sdk
-        URL https://github.com/rerun-io/rerun/releases/download/0.21.0/rerun_cpp_sdk.zip
-    )
-    FetchContent_MakeAvailable(rerun_sdk)
-    message(STATUS "Rerun SDK enabled")
+    find_package(rerun_sdk CONFIG REQUIRED)
 endif()
 
-# Create library (STATIC for CM4 deployment)
-add_library(${PROJECT_NAME} STATIC
+add_library(decode_estimator STATIC
     src/pose_estimator.cpp
     src/bearing_factor.cpp
     src/landmark_map.cpp
     src/visualization.cpp
 )
 
-# Add dependencies on external projects if building locally
-if(DECODE_USE_LOCAL_DEPS)
-    add_dependencies(${PROJECT_NAME} gtsam_build)
-    target_link_libraries(${PROJECT_NAME}
-        PUBLIC
-            ${TBB_LIBRARIES}
-    )
-    target_include_directories(${PROJECT_NAME} PUBLIC ${TBB_INCLUDE_DIRS})
-endif()
-
-target_include_directories(${PROJECT_NAME}
+target_include_directories(decode_estimator
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
-# Add Eigen include directory (use BUILD_INTERFACE for local deps to avoid install issues)
-if(DECODE_USE_LOCAL_DEPS)
-    # Use GTSAM's bundled Eigen for ABI compatibility
-    target_include_directories(${PROJECT_NAME} PUBLIC
-        $<BUILD_INTERFACE:${GTSAM_EIGEN_INCLUDE_DIR}>)
-else()
-    target_include_directories(${PROJECT_NAME} PUBLIC ${EIGEN3_INCLUDE_DIR})
-endif()
-
-# Link GTSAM and TBB for consistent allocator usage
-target_link_libraries(${PROJECT_NAME}
+target_compile_features(decode_estimator PUBLIC cxx_std_17)
+target_compile_definitions(decode_estimator
     PUBLIC
-        gtsam
-        tbb
-        tbbmalloc
+        DECODE_ENABLE_RERUN=$<BOOL:${DECODE_ENABLE_RERUN}>
 )
 
-# Conditional Rerun support
-if(DECODE_ENABLE_RERUN)
-    target_link_libraries(${PROJECT_NAME}
-        PRIVATE
-            rerun_sdk
-    )
-    target_compile_definitions(${PROJECT_NAME}
-        PUBLIC
-            DECODE_ENABLE_RERUN=1
-    )
-else()
-    target_compile_definitions(${PROJECT_NAME}
-        PUBLIC
-            DECODE_ENABLE_RERUN=0
-    )
-endif()
+target_link_libraries(decode_estimator
+    PUBLIC
+        gtsam
+        metis-gtsam
+        Eigen3::Eigen
+        Boost::serialization
+        Boost::system
+        Boost::filesystem
+        Boost::thread
+        Boost::program_options
+        Boost::date_time
+        Boost::timer
+        Boost::chrono
+        Boost::regex
+        Threads::Threads
+)
 
-# Performance flags for Release builds
-# Use -O2 instead of -O3 to avoid Eigen ABI issues with aggressive optimizations
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    target_compile_options(${PROJECT_NAME} PRIVATE
-        -O2
-        -DNDEBUG
-    )
-    # Only use -march=native on x86_64, skip on ARM for cross-compilation compatibility
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-        target_compile_options(${PROJECT_NAME} PRIVATE -march=native)
+if(DECODE_ENABLE_RERUN)
+    if(TARGET rerun_sdk)
+        target_link_libraries(decode_estimator PUBLIC rerun_sdk)
+    elseif(TARGET rerun::rerun_sdk)
+        target_link_libraries(decode_estimator PUBLIC rerun::rerun_sdk)
     endif()
 endif()
 
-# Examples
 if(DECODE_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# Tests
 if(DECODE_BUILD_TESTS)
+    if(CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "DECODE_BUILD_TESTS=ON is not supported when cross-compiling.")
+    endif()
+
+    include(CTest)
     enable_testing()
+
+    if(DECODE_FETCH_GTEST)
+        set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+        set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG ${DECODE_GTEST_GIT_TAG}
+        )
+        FetchContent_MakeAvailable(googletest)
+    else()
+        find_package(GTest REQUIRED)
+    endif()
+
     add_subdirectory(tests)
 endif()
-
-# Installation rules
-install(TARGETS ${PROJECT_NAME}
-    EXPORT ${PROJECT_NAME}Targets
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-    RUNTIME DESTINATION bin
-    INCLUDES DESTINATION include
-)
-
-install(DIRECTORY include/
-    DESTINATION include
-)
-
-install(EXPORT ${PROJECT_NAME}Targets
-    FILE ${PROJECT_NAME}Targets.cmake
-    NAMESPACE decode::
-    DESTINATION lib/cmake/${PROJECT_NAME}
-)

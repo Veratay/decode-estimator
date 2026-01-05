@@ -3,22 +3,26 @@ set -euo pipefail
 
 build_type="Release"
 enable_rerun="OFF"
-build_tests="OFF"
-build_dir="build"
+build_dir="build-cm4"
 clean_build="OFF"
+toolchain_file="cmake/toolchains/cm4.cmake"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/build.sh [options]
+Usage: scripts/build_cm4.sh [options]
 
 Options:
   --debug           Debug build
   --release         Release build (default)
   --rerun           Enable Rerun visualization
-  --tests           Build unit tests (host only)
-  --build-dir DIR   Override build directory (default: build)
+  --build-dir DIR   Override build directory (default: build-cm4)
+  --toolchain FILE  Override toolchain file
   --clean           Remove build directory before configuring
   -h, --help        Show this help
+
+Environment:
+  CM4_TOOLCHAIN_PREFIX  Toolchain triplet (default: aarch64-linux-gnu)
+  CM4_SYSROOT           Sysroot for target
 EOF
 }
 
@@ -33,11 +37,12 @@ while [[ $# -gt 0 ]]; do
         --rerun)
             enable_rerun="ON"
             ;;
-        --tests)
-            build_tests="ON"
-            ;;
         --build-dir)
             build_dir="$2"
+            shift
+            ;;
+        --toolchain)
+            toolchain_file="$2"
             shift
             ;;
         --clean)
@@ -71,7 +76,8 @@ fi
 
 cmake -S . -B "$build_dir" \
     -DCMAKE_BUILD_TYPE="$build_type" \
+    -DCMAKE_TOOLCHAIN_FILE="$toolchain_file" \
     -DDECODE_ENABLE_RERUN="$enable_rerun" \
-    -DDECODE_BUILD_TESTS="$build_tests"
+    -DDECODE_BUILD_TESTS=OFF
 
 cmake --build "$build_dir" -j"$jobs"

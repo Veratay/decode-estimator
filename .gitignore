@@ -1,2 +1,6 @@
 build/
 build-debug/
+build-cm4/
+build-*/
+Testing/
+tests/Testing/
