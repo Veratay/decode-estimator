@@ -2,6 +2,7 @@
 #include "decode_estimator/range_factor.hpp"
 #include "decode_estimator/visualization.hpp"
 
+#include <gtsam/linear/NoiseModel.h>
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
@@ -70,6 +71,27 @@ gtsam::Symbol PoseEstimator::poseSymbol(size_t idx) {
     return X(idx);
 }
 
+void PoseEstimator::resetHorizonWithPrior(const gtsam::Pose2& pose,
+                                          const gtsam::SharedNoiseModel& prior_noise) {
+    // Clear any pending factors/values
+    pending_graph_.resize(0);
+    pending_values_.clear();
+
+    // Recreate iSAM2 to clear previous state
+    createISAM2();
+
+    // Seed new horizon with prior
+    pending_graph_.add(gtsam::PriorFactor<gtsam::Pose2>(X(0), pose, prior_noise));
+    pending_values_.insert(X(0), pose);
+    isam2_->update(pending_graph_, pending_values_);
+    pending_graph_.resize(0);
+    pending_values_.clear();
+
+    current_pose_idx_ = 0;
+    current_pose_ = pose;
+    last_solved_pose_ = pose;
+}
+
 void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
                                 double initial_x,
                                 double initial_y,
@@ -89,22 +111,7 @@ void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
     pending_bearings_.clear();
     pending_distances_.clear();
 
-    // Clear any pending factors/values
-    pending_graph_.resize(0);
-    pending_values_.clear();
-
-    // Recreate iSAM2 to clear previous state
-    createISAM2();
-
-    // Add prior factor for initial pose
-    pending_graph_.add(
-        gtsam::PriorFactor<gtsam::Pose2>(X(0), current_pose_, prior_noise_));
-    pending_values_.insert(X(0), current_pose_);
-
-    // Perform initial iSAM2 update
-    isam2_->update(pending_graph_, pending_values_);
-    pending_graph_.resize(0);
-    pending_values_.clear();
+    resetHorizonWithPrior(current_pose_, prior_noise_);
 
     initialized_ = true;
 
@@ -231,6 +238,19 @@ PoseEstimate PoseEstimator::update() {
     }
 
     if (config_.compact_odometry && pending_odom_steps_ > 0) {
+        if (current_pose_idx_ + 1 >= kHorizonCapacity) {
+            gtsam::SharedNoiseModel prior_noise = prior_noise_;
+            try {
+                gtsam::Values estimate = isam2_->calculateEstimate();
+                gtsam::Marginals marginals(isam2_->getFactorsUnsafe(), estimate);
+                gtsam::Matrix33 cov = marginals.marginalCovariance(X(current_pose_idx_));
+                prior_noise = gtsam::noiseModel::Gaussian::Covariance(cov);
+            } catch (...) {
+                prior_noise = prior_noise_;
+            }
+            resetHorizonWithPrior(last_solved_pose_, prior_noise);
+        }
+
         size_t prev_idx = current_pose_idx_;
         current_pose_idx_++;
         double scale = std::sqrt(static_cast<double>(pending_odom_steps_));

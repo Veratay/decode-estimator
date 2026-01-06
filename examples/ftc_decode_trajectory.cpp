@@ -23,8 +23,8 @@ constexpr double TURN_GAIN = 2.0;      // Heading correction gain
 constexpr int NUM_ITERATIONS = 20000;
 
 // Noise parameters for simulation
-constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
-constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
+constexpr double ODOM_NOISE_XY = 0.0004;     // meters per step
+constexpr double ODOM_NOISE_THETA = 0.0002;  // radians per step
 constexpr double BEARING_NOISE = 0.025;     // radians (~1.4 degrees)
 constexpr double DISTANCE_NOISE = 0.12;     // meters (less confident than bearing)
 

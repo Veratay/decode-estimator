@@ -173,10 +173,16 @@ private:
     /// Get symbol for pose at index
     static gtsam::Symbol poseSymbol(size_t idx);
 
+    /// Reset horizon and seed with a prior at the current pose
+    void resetHorizonWithPrior(const gtsam::Pose2& pose,
+                               const gtsam::SharedNoiseModel& prior_noise);
+
     /// Update visualization (no-op if disabled)
     void visualize();
 
 private:
+    static constexpr size_t kHorizonCapacity = 2000;
+
     EstimatorConfig config_;
     bool initialized_ = false;
 
