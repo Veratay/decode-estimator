@@ -20,7 +20,7 @@
 constexpr double DT = 0.02;            // 50 Hz
 constexpr double ROBOT_SPEED = 0.6;    // m/s
 constexpr double TURN_GAIN = 2.0;      // Heading correction gain
-constexpr int NUM_ITERATIONS = 2000;
+constexpr int NUM_ITERATIONS = 20000;
 
 // Noise parameters for simulation
 constexpr double ODOM_NOISE_XY = 0.004;     // meters per step

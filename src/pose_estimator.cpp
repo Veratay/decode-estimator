@@ -82,7 +82,10 @@ void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
     // Reset state
     current_pose_idx_ = 0;
     current_pose_ = gtsam::Pose2(initial_x, initial_y, initial_theta);
+    last_solved_pose_ = current_pose_;
     current_timestamp_ = 0.0;
+    pending_odom_delta_ = gtsam::Pose2();
+    pending_odom_steps_ = 0;
     pending_bearings_.clear();
     pending_distances_.clear();
 
@@ -125,7 +128,10 @@ void PoseEstimator::reset() {
     initialized_ = false;
     current_pose_idx_ = 0;
     current_pose_ = gtsam::Pose2();
+    last_solved_pose_ = current_pose_;
     current_timestamp_ = 0.0;
+    pending_odom_delta_ = gtsam::Pose2();
+    pending_odom_steps_ = 0;
     pending_bearings_.clear();
     pending_distances_.clear();
     pending_graph_.resize(0);
@@ -145,22 +151,29 @@ PoseEstimate PoseEstimator::processOdometry(const OdometryMeasurement& odom) {
     // Create relative pose from odometry (in robot body frame)
     gtsam::Pose2 delta(odom.dx, odom.dy, odom.dtheta);
 
-    // Predict new pose by composing current pose with delta
-    gtsam::Pose2 predicted = current_pose_.compose(delta);
+    if (config_.compact_odometry) {
+        pending_odom_delta_ = pending_odom_delta_.compose(delta);
+        pending_odom_steps_++;
+        current_pose_ = last_solved_pose_.compose(pending_odom_delta_);
+        current_timestamp_ = odom.timestamp;
+    } else {
+        // Predict new pose by composing current pose with delta
+        gtsam::Pose2 predicted = current_pose_.compose(delta);
 
-    // Add BetweenFactor connecting previous pose to new pose
-    size_t prev_idx = current_pose_idx_;
-    current_pose_idx_++;
+        // Add BetweenFactor connecting previous pose to new pose
+        size_t prev_idx = current_pose_idx_;
+        current_pose_idx_++;
 
-    pending_graph_.add(gtsam::BetweenFactor<gtsam::Pose2>(
-        X(prev_idx), X(current_pose_idx_), delta, odom_noise_));
+        pending_graph_.add(gtsam::BetweenFactor<gtsam::Pose2>(
+            X(prev_idx), X(current_pose_idx_), delta, odom_noise_));
 
-    // Add initial estimate for new pose
-    pending_values_.insert(X(current_pose_idx_), predicted);
+        // Add initial estimate for new pose
+        pending_values_.insert(X(current_pose_idx_), predicted);
 
-    // Update current pose prediction
-    current_pose_ = predicted;
-    current_timestamp_ = odom.timestamp;
+        // Update current pose prediction
+        current_pose_ = predicted;
+        current_timestamp_ = odom.timestamp;
+    }
 
     // Return current predicted estimate
     PoseEstimate estimate;
@@ -200,10 +213,37 @@ PoseEstimate PoseEstimator::update() {
         throw std::runtime_error("PoseEstimator not initialized");
     }
 
+    bool has_vision = !pending_bearings_.empty() || !pending_distances_.empty();
+    if (!has_vision) {
+        PoseEstimate estimate;
+        estimate.x = current_pose_.x();
+        estimate.y = current_pose_.y();
+        estimate.theta = current_pose_.theta();
+        estimate.timestamp = current_timestamp_;
+        estimate.has_covariance = false;
+        return estimate;
+    }
+
     std::unordered_set<int32_t> visible_tags;
     for (const auto& [id, point] : landmark_map_.getAllLandmarks()) {
         (void)point;
         visible_tags.insert(id);
+    }
+
+    if (config_.compact_odometry && pending_odom_steps_ > 0) {
+        size_t prev_idx = current_pose_idx_;
+        current_pose_idx_++;
+        double scale = std::sqrt(static_cast<double>(pending_odom_steps_));
+        auto odom_noise = gtsam::noiseModel::Diagonal::Sigmas(
+            gtsam::Vector3(config_.odom_sigma_xy * scale,
+                           config_.odom_sigma_xy * scale,
+                           config_.odom_sigma_theta * scale));
+
+        pending_graph_.add(gtsam::BetweenFactor<gtsam::Pose2>(
+            X(prev_idx), X(current_pose_idx_), pending_odom_delta_, odom_noise));
+
+        gtsam::Pose2 predicted = last_solved_pose_.compose(pending_odom_delta_);
+        pending_values_.insert(X(current_pose_idx_), predicted);
     }
 
     // Process pending distance measurements
@@ -236,12 +276,12 @@ PoseEstimate PoseEstimator::update() {
         pending_graph_.add(RangeToKnownLandmarkFactor(
             X(current_pose_idx_), *landmark_opt, distance.distance_m, range_noise));
 
-        std::cout << "distance tag=" << distance.tag_id
-                  << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
-                  << ", " << current_pose_.theta() << ")"
-                  << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
-                  << " distance_m=" << distance.distance_m
-                  << std::endl;
+        // std::cout << "distance tag=" << distance.tag_id
+        //           << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
+        //           << ", " << current_pose_.theta() << ")"
+        //           << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
+        //           << " distance_m=" << distance.distance_m
+        //           << std::endl;
     }
     pending_distances_.clear();
 
@@ -275,12 +315,12 @@ PoseEstimate PoseEstimator::update() {
         }
 #endif
 
-        std::cout << "bearing tag=" << bearing.tag_id
-                  << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
-                  << ", " << current_pose_.theta() << ")"
-                  << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
-                  << " bearing_rad=" << bearing.bearing_rad
-                  << std::endl;
+        // std::cout << "bearing tag=" << bearing.tag_id
+        //           << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
+        //           << ", " << current_pose_.theta() << ")"
+        //           << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
+        //           << " bearing_rad=" << bearing.bearing_rad
+        //           << std::endl;
     }
     pending_bearings_.clear();
 
@@ -302,6 +342,9 @@ PoseEstimate PoseEstimator::update() {
     // Get updated estimate
     gtsam::Values estimate = isam2_->calculateEstimate();
     current_pose_ = estimate.at<gtsam::Pose2>(X(current_pose_idx_));
+    last_solved_pose_ = current_pose_;
+    pending_odom_delta_ = gtsam::Pose2();
+    pending_odom_steps_ = 0;
 
     PoseEstimate result;
     result.x = current_pose_.x();
@@ -310,9 +353,9 @@ PoseEstimate PoseEstimator::update() {
     result.timestamp = current_timestamp_;
     result.has_covariance = false;
 
-    std::cout << "solve_ms=" << last_solve_ms_
-              << " horizon=" << (current_pose_idx_ + 1)
-              << std::endl;
+    // std::cout << "solve_ms=" << last_solve_ms_
+    //           << " horizon=" << (current_pose_idx_ + 1)
+    //           << std::endl;
 
 #if DECODE_ENABLE_RERUN
     if (visualizer_) {

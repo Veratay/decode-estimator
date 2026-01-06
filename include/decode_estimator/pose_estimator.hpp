@@ -33,6 +33,9 @@ struct EstimatorConfig {
     double odom_sigma_xy = 0.02;    ///< Odometry position uncertainty per update (meters)
     double odom_sigma_theta = 0.01; ///< Odometry heading uncertainty per update (radians)
 
+    /// If true, compacts odometry between vision updates into a single factor
+    bool compact_odometry = true;
+
     /// Default bearing uncertainty if not provided per measurement (radians, ~3 degrees)
     double default_bearing_sigma = 0.05;
     /// Default distance uncertainty if not provided per measurement (meters)
@@ -79,8 +82,8 @@ public:
     /**
      * @brief Process odometry measurement
      *
-     * Adds a BetweenFactor connecting the previous pose to a new pose.
-     * Call update() afterwards to incorporate measurements.
+     * Accumulates odometry until the next vision update is available.
+     * Call update() after adding vision measurements to incorporate them.
      *
      * @param odom  Odometry measurement (dx, dy, dtheta in robot frame)
      * @return Current predicted pose (before optimization)
@@ -114,8 +117,8 @@ public:
     /**
      * @brief Perform iSAM2 update
      *
-     * Incorporates all pending odometry and bearing factors, optimizes,
-     * and returns the updated pose estimate.
+     * Incorporates pending vision factors and any accumulated odometry since
+     * the last vision update, then optimizes and returns the updated estimate.
      *
      * @return Updated pose estimate
      */
@@ -188,7 +191,10 @@ private:
     // State tracking
     size_t current_pose_idx_ = 0;
     gtsam::Pose2 current_pose_;
+    gtsam::Pose2 last_solved_pose_;
     double current_timestamp_ = 0.0;
+    gtsam::Pose2 pending_odom_delta_;
+    size_t pending_odom_steps_ = 0;
 
     // Noise models (cached for performance)
     gtsam::SharedNoiseModel prior_noise_;

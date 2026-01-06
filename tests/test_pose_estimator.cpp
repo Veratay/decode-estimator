@@ -78,13 +78,12 @@ TEST_F(PoseEstimatorTest, OdometryProcessing) {
     odom.dtheta = 0.0;
     odom.timestamp = 0.1;
 
-    estimator.processOdometry(odom);
-    PoseEstimate est = estimator.update();
+    PoseEstimate est = estimator.processOdometry(odom);
 
     EXPECT_NEAR(est.x, 1.0, 0.01);
     EXPECT_NEAR(est.y, 0.0, 0.01);
     EXPECT_NEAR(est.theta, 0.0, 0.01);
-    EXPECT_EQ(estimator.getCurrentPoseIndex(), 1);
+    EXPECT_EQ(estimator.getCurrentPoseIndex(), 0);
 }
 
 // Test odometry with rotation
@@ -102,7 +101,6 @@ TEST_F(PoseEstimatorTest, OdometryWithRotation) {
     odom1.timestamp = 0.1;
 
     estimator.processOdometry(odom1);
-    estimator.update();
 
     // Now move forward (should move in +Y direction)
     OdometryMeasurement odom2;
@@ -111,8 +109,7 @@ TEST_F(PoseEstimatorTest, OdometryWithRotation) {
     odom2.dtheta = 0.0;
     odom2.timestamp = 0.2;
 
-    estimator.processOdometry(odom2);
-    PoseEstimate est = estimator.update();
+    PoseEstimate est = estimator.processOdometry(odom2);
 
     EXPECT_NEAR(est.x, 0.0, 0.05);
     EXPECT_NEAR(est.y, 1.0, 0.05);
@@ -182,6 +179,9 @@ TEST_F(PoseEstimatorTest, DriftCorrection) {
     double true_y = start_y;
     double true_theta = 0.0;
 
+    PoseEstimate last_est = estimator.getCurrentEstimate();
+    double last_true_x = true_x;
+    double last_true_y = true_y;
     for (int i = 0; i < 50; i++) {
         // Small forward motion with intentional drift
         OdometryMeasurement odom;
@@ -220,16 +220,17 @@ TEST_F(PoseEstimatorTest, DriftCorrection) {
 
                 estimator.addDistanceMeasurement(distance);
             }
+            last_est = estimator.update();
+            last_true_x = true_x;
+            last_true_y = true_y;
         }
-
-        estimator.update();
     }
 
-    PoseEstimate final_est = estimator.getCurrentEstimate();
+    PoseEstimate final_est = last_est;
 
     // With bearing corrections, estimate should be close to true position
-    double error = std::sqrt((final_est.x - true_x) * (final_est.x - true_x) +
-                             (final_est.y - true_y) * (final_est.y - true_y));
+    double error = std::sqrt((final_est.x - last_true_x) * (final_est.x - last_true_x) +
+                             (final_est.y - last_true_y) * (final_est.y - last_true_y));
 
     // Should be within 0.5 meters of truth (with drift corrections)
     EXPECT_LT(error, 0.5);
@@ -238,6 +239,7 @@ TEST_F(PoseEstimatorTest, DriftCorrection) {
 // Test getTrajectory
 TEST_F(PoseEstimatorTest, GetTrajectory) {
     EstimatorConfig config;
+    config.compact_odometry = false;
     PoseEstimator estimator(config);
 
     estimator.initialize(landmarks_, 0.0, 0.0, 0.0);
@@ -250,8 +252,32 @@ TEST_F(PoseEstimatorTest, GetTrajectory) {
         odom.dtheta = 0.0;
         odom.timestamp = i * 0.1;
         estimator.processOdometry(odom);
-        estimator.update();
     }
+
+    double true_x = 0.5;
+    double true_y = 0.0;
+    double true_theta = 0.0;
+    const auto& lm = landmarks_[0];
+    double dx = lm.x - true_x;
+    double dy = lm.y - true_y;
+    double global_bearing = std::atan2(dy, dx);
+    double robot_bearing = wrapAngle(global_bearing - true_theta);
+
+    BearingMeasurement bearing;
+    bearing.tag_id = lm.id;
+    bearing.bearing_rad = robot_bearing;
+    bearing.uncertainty_rad = 0.01;
+    bearing.timestamp = 0.6;
+    estimator.addBearingMeasurement(bearing);
+
+    DistanceMeasurement distance;
+    distance.tag_id = lm.id;
+    distance.distance_m = std::sqrt(dx * dx + dy * dy);
+    distance.uncertainty_m = 0.05;
+    distance.timestamp = 0.6;
+    estimator.addDistanceMeasurement(distance);
+
+    estimator.update();
 
     std::vector<PoseEstimate> trajectory = estimator.getTrajectory();
 
@@ -281,6 +307,27 @@ TEST_F(PoseEstimatorTest, Covariance) {
     odom.dtheta = 0.0;
     odom.timestamp = 0.1;
     estimator.processOdometry(odom);
+
+    const auto& lm = landmarks_[0];
+    double dx = lm.x - 1.0;
+    double dy = lm.y - 0.0;
+    double global_bearing = std::atan2(dy, dx);
+    double robot_bearing = wrapAngle(global_bearing - 0.0);
+
+    BearingMeasurement bearing;
+    bearing.tag_id = lm.id;
+    bearing.bearing_rad = robot_bearing;
+    bearing.uncertainty_rad = 0.02;
+    bearing.timestamp = 0.1;
+    estimator.addBearingMeasurement(bearing);
+
+    DistanceMeasurement distance;
+    distance.tag_id = lm.id;
+    distance.distance_m = std::sqrt(dx * dx + dy * dy);
+    distance.uncertainty_m = 0.05;
+    distance.timestamp = 0.1;
+    estimator.addDistanceMeasurement(distance);
+
     estimator.update();
 
     PoseEstimate est = estimator.getCurrentEstimateWithCovariance();
@@ -292,6 +339,79 @@ TEST_F(PoseEstimatorTest, Covariance) {
     EXPECT_GT(est.covariance[0], 0);  // xx
     EXPECT_GT(est.covariance[4], 0);  // yy
     EXPECT_GT(est.covariance[8], 0);  // theta-theta
+}
+
+// Test compacted vs non-compacted odometry updates
+TEST_F(PoseEstimatorTest, CompactionMatchesNonCompacted) {
+    EstimatorConfig compacted_config;
+    compacted_config.compact_odometry = true;
+    compacted_config.odom_sigma_xy = 0.001;
+    compacted_config.odom_sigma_theta = 0.001;
+    compacted_config.default_bearing_sigma = 0.001;
+    compacted_config.default_distance_sigma = 0.001;
+
+    EstimatorConfig full_config = compacted_config;
+    full_config.compact_odometry = false;
+
+    PoseEstimator compacted(compacted_config);
+    PoseEstimator full(full_config);
+
+    compacted.initialize(landmarks_, 0.0, 0.0, 0.0);
+    full.initialize(landmarks_, 0.0, 0.0, 0.0);
+
+    double true_x = 0.0;
+    double true_y = 0.0;
+    double true_theta = 0.0;
+    const auto& lm = landmarks_[1];
+
+    PoseEstimate compacted_est = compacted.getCurrentEstimate();
+    PoseEstimate full_est = full.getCurrentEstimate();
+
+    for (int i = 0; i < 10; i++) {
+        OdometryMeasurement odom;
+        odom.dx = 0.2;
+        odom.dy = 0.0;
+        odom.dtheta = 0.0;
+        odom.timestamp = (i + 1) * 0.1;
+
+        compacted.processOdometry(odom);
+        full.processOdometry(odom);
+
+        true_x += 0.2 * std::cos(true_theta);
+        true_y += 0.2 * std::sin(true_theta);
+
+        if ((i + 1) % 5 == 0) {
+            double dx = lm.x - true_x;
+            double dy = lm.y - true_y;
+            double global_bearing = std::atan2(dy, dx);
+            double robot_bearing = wrapAngle(global_bearing - true_theta);
+
+            BearingMeasurement bearing;
+            bearing.tag_id = lm.id;
+            bearing.bearing_rad = robot_bearing;
+            bearing.uncertainty_rad = 0.001;
+            bearing.timestamp = odom.timestamp;
+
+            DistanceMeasurement distance;
+            distance.tag_id = lm.id;
+            distance.distance_m = std::sqrt(dx * dx + dy * dy);
+            distance.uncertainty_m = 0.001;
+            distance.timestamp = odom.timestamp;
+
+            compacted.addBearingMeasurement(bearing);
+            compacted.addDistanceMeasurement(distance);
+            full.addBearingMeasurement(bearing);
+            full.addDistanceMeasurement(distance);
+
+            compacted_est = compacted.update();
+            full_est = full.update();
+        }
+    }
+
+    EXPECT_NEAR(compacted_est.x, full_est.x, 1e-3);
+    EXPECT_NEAR(compacted_est.y, full_est.y, 1e-3);
+    EXPECT_NEAR(compacted_est.theta, full_est.theta, 1e-3);
+    EXPECT_LT(compacted.getHorizonSize(), full.getHorizonSize());
 }
 
 // Test landmark map
