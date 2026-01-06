@@ -277,6 +277,8 @@ int main() {
     std::cout << std::endl;
     std::cout << "Estimator position error: " << final_error << " m" << std::endl;
     std::cout << "Odometry-only error:      " << final_odom_error << " m" << std::endl;
+    std::cout << "Average solve time:       " << estimator.getAverageSolveTimeMs() << " ms" << std::endl;
+    std::cout << "Horizon size:             " << estimator.getHorizonSize() << " poses" << std::endl;
     std::cout << "Improvement:              " << (final_odom_error - final_error) << " m ("
               << ((final_odom_error - final_error) / final_odom_error * 100) << "% reduction)"
               << std::endl;

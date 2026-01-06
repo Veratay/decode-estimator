@@ -6,6 +6,7 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -283,6 +284,8 @@ PoseEstimate PoseEstimator::update() {
     }
     pending_bearings_.clear();
 
+    auto solve_start = std::chrono::steady_clock::now();
+
     // Perform iSAM2 update
     if (pending_graph_.size() > 0 || pending_values_.size() > 0) {
         isam2_->update(pending_graph_, pending_values_);
@@ -290,6 +293,11 @@ PoseEstimate PoseEstimator::update() {
         pending_graph_.resize(0);
         pending_values_.clear();
     }
+    auto solve_end = std::chrono::steady_clock::now();
+    last_solve_ms_ =
+        std::chrono::duration<double, std::milli>(solve_end - solve_start).count();
+    total_solve_ms_ += last_solve_ms_;
+    solve_count_++;
 
     // Get updated estimate
     gtsam::Values estimate = isam2_->calculateEstimate();
@@ -302,12 +310,30 @@ PoseEstimate PoseEstimator::update() {
     result.timestamp = current_timestamp_;
     result.has_covariance = false;
 
+    std::cout << "solve_ms=" << last_solve_ms_
+              << " horizon=" << (current_pose_idx_ + 1)
+              << std::endl;
+
 #if DECODE_ENABLE_RERUN
     if (visualizer_) {
+        PoseEstimate vis = result;
+        try {
+            gtsam::Marginals marginals(isam2_->getFactorsUnsafe(), estimate);
+            gtsam::Matrix33 cov = marginals.marginalCovariance(X(current_pose_idx_));
+            for (int i = 0; i < 3; i++) {
+                for (int j = 0; j < 3; j++) {
+                    vis.covariance[static_cast<size_t>(i * 3 + j)] = cov(i, j);
+                }
+            }
+            vis.has_covariance = true;
+        } catch (...) {
+            vis.has_covariance = false;
+        }
+
         visualizer_->logLandmarkRays(landmark_map_, result,
                                      static_cast<int64_t>(current_pose_idx_),
                                      visible_tags);
-        visualizer_->logPose(result, current_pose_idx_);
+        visualizer_->logPose(vis, current_pose_idx_);
     }
 #endif
 
@@ -419,9 +445,25 @@ size_t PoseEstimator::getCurrentPoseIndex() const {
     return current_pose_idx_;
 }
 
+size_t PoseEstimator::getHorizonSize() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return current_pose_idx_ + 1;
+}
+
 bool PoseEstimator::isInitialized() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return initialized_;
+}
+
+double PoseEstimator::getLastSolveTimeMs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_solve_ms_;
+}
+
+double PoseEstimator::getAverageSolveTimeMs() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return solve_count_ > 0 ? (total_solve_ms_ / static_cast<double>(solve_count_))
+                            : 0.0;
 }
 
 const LandmarkMap& PoseEstimator::getLandmarkMap() const {

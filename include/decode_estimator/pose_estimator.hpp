@@ -133,8 +133,17 @@ public:
     /// Get current pose index
     size_t getCurrentPoseIndex() const;
 
+    /// Get current horizon size (number of poses in graph)
+    size_t getHorizonSize() const;
+
     /// Check if initialized
     bool isInitialized() const;
+
+    /// Get last solve time (milliseconds)
+    double getLastSolveTimeMs() const;
+
+    /// Get average solve time (milliseconds)
+    double getAverageSolveTimeMs() const;
 
     /// Get landmark map (for visualization/debugging)
     const LandmarkMap& getLandmarkMap() const;
@@ -194,6 +203,11 @@ private:
 
     // Visualization (defined in visualization.hpp)
     std::unique_ptr<Visualizer> visualizer_;
+
+    // Solve timing (milliseconds)
+    double last_solve_ms_ = 0.0;
+    double total_solve_ms_ = 0.0;
+    size_t solve_count_ = 0;
 };
 
 } // namespace decode

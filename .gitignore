@@ -1,4 +1,5 @@
 build/
+.cache
 build-debug/
 build-cm4/
 build-*/

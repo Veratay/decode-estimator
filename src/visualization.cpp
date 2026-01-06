@@ -2,6 +2,7 @@
 
 #if DECODE_ENABLE_RERUN
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_set>
 
@@ -33,23 +34,51 @@ void Visualizer::logLandmarks(const LandmarkMap &landmarks) {
 }
 
 void Visualizer::logPose(const PoseEstimate &pose, size_t pose_idx) {
-  // Log pose as a point
+  rec_.log("world/robot",
+           rerun::Transform3D::from_translation_rotation(
+               {static_cast<float>(pose.x), static_cast<float>(pose.y), 0.0f},
+               rerun::Rotation3D(rerun::datatypes::RotationAxisAngle(
+                   rerun::datatypes::Vec3D{0.0f, 0.0f, 1.0f},
+                   rerun::datatypes::Angle::radians(
+                       static_cast<float>(pose.theta))))));
+
+  float radius = 0.15f;
+  if (pose.has_covariance) {
+    double cov_xx = pose.covariance[0];
+    double cov_xy = pose.covariance[1];
+    double cov_yy = pose.covariance[4];
+    double trace = cov_xx + cov_yy;
+    double det = cov_xx * cov_yy - cov_xy * cov_xy;
+    double discriminant = std::sqrt(std::max(trace * trace / 4.0 - det, 0.0));
+    double lambda1 = trace / 2.0 + discriminant;
+    radius = static_cast<float>(std::sqrt(std::max(lambda1, 0.0)));
+  }
+
+  std::vector<rerun::Position3D> circle_points;
+  const int num_points = 32;
+  for (int i = 0; i <= num_points; i++) {
+    double t = 2.0 * M_PI * i / num_points;
+    double x = radius * std::cos(t);
+    double y = radius * std::sin(t);
+    circle_points.push_back(
+        {static_cast<float>(x), static_cast<float>(y), 0.0f});
+  }
+
   rec_.log("world/robot/position",
-           rerun::Points3D(
-               {{static_cast<float>(pose.x), static_cast<float>(pose.y), 0.0f}})
+           rerun::LineStrips3D({circle_points})
                .with_colors({rerun::Color(0, 255, 0)}) // Green
-               .with_radii({0.15f}));
+               .with_radii({0.05f}));
 
   // Log heading as an arrow
   float arrow_len = 0.5f;
 
   rec_.log("world/robot/heading",
            rerun::Arrows3D::from_vectors(
-               {{static_cast<float>(arrow_len * std::cos(pose.theta)),
-                 static_cast<float>(arrow_len * std::sin(pose.theta)), 0.0f}})
-               .with_origins({{static_cast<float>(pose.x),
-                               static_cast<float>(pose.y), 0.0f}})
+               {{static_cast<float>(arrow_len), 0.0f, 0.0f}})
+               .with_origins({{0.0f, 0.0f, 0.0f}})
                .with_colors({rerun::Color(0, 255, 0)}));
+
+  logUncertaintyEllipse(pose, pose_idx);
 }
 
 void Visualizer::logTrajectory(const std::vector<PoseEstimate> &trajectory) {
@@ -109,6 +138,12 @@ void Visualizer::logTimeSeriesMetrics(
     const PoseEstimate &odom_pose, double position_error, double odom_error) {
   rec_.set_time_sequence("step", step);
 
+  rec_.log("world/true_robot/position",
+           rerun::Points3D(
+               {{static_cast<float>(true_pose.x), static_cast<float>(true_pose.y), 0.0f}})
+               .with_colors({rerun::Color(255, 0, 0)}) // Red
+               .with_radii({0.12f}));
+
   rec_.log("metrics/error/position_estimate", rerun::Scalars(position_error));
   rec_.log("metrics/error/position_odom", rerun::Scalars(odom_error));
   rec_.log("metrics/error/x", rerun::Scalars(estimate.x - true_pose.x));
@@ -148,24 +183,20 @@ void Visualizer::logUncertaintyEllipse(const PoseEstimate &pose,
   // Ellipse orientation
   double angle = 0.5 * std::atan2(2.0 * cov_xy, cov_xx - cov_yy);
 
-  // Generate ellipse points
-  std::vector<rerun::Position3D> ellipse_points;
-  const int num_points = 32;
-  for (int i = 0; i <= num_points; i++) {
-    double t = 2.0 * M_PI * i / num_points;
-    double ex = a * std::cos(t);
-    double ey = b * std::sin(t);
-
-    // Rotate and translate
-    double x = pose.x + ex * std::cos(angle) - ey * std::sin(angle);
-    double y = pose.y + ex * std::sin(angle) + ey * std::cos(angle);
-
-    ellipse_points.push_back(
-        {static_cast<float>(x), static_cast<float>(y), 0.0f});
-  }
-
   rec_.log("world/robot/uncertainty",
-           rerun::LineStrips3D({ellipse_points})
+           rerun::Ellipsoids3D::from_centers_and_half_sizes(
+               {rerun::components::Translation3D(
+                   0.0f, 0.0f, 0.0f)},
+               {rerun::components::HalfSize3D(
+                   static_cast<float>(a),
+                   static_cast<float>(b),
+                   0.01f)})
+               .with_rotation_axis_angles(
+                   {rerun::components::RotationAxisAngle(
+                       rerun::datatypes::RotationAxisAngle(
+                           rerun::datatypes::Vec3D{0.0f, 0.0f, 1.0f},
+                           rerun::datatypes::Angle::radians(
+                               static_cast<float>(angle))))})
                .with_colors(
                    {rerun::Color(0, 255, 0, 128)})); // Green, semi-transparent
 }
