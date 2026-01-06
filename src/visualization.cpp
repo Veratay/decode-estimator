@@ -135,7 +135,8 @@ void Visualizer::logLandmarkRays(
 
 void Visualizer::logTimeSeriesMetrics(
     int64_t step, const PoseEstimate &estimate, const PoseEstimate &true_pose,
-    const PoseEstimate &odom_pose, double position_error, double odom_error) {
+    const PoseEstimate &odom_pose, const PoseEstimate &ekf_pose,
+    double position_error, double odom_error, double ekf_error) {
   rec_.set_time_sequence("step", step);
 
   rec_.log("world/true_robot/position",
@@ -146,6 +147,7 @@ void Visualizer::logTimeSeriesMetrics(
 
   rec_.log("metrics/error/position_estimate", rerun::Scalars(position_error));
   rec_.log("metrics/error/position_odom", rerun::Scalars(odom_error));
+  rec_.log("metrics/error/position_ekf", rerun::Scalars(ekf_error));
   rec_.log("metrics/error/x", rerun::Scalars(estimate.x - true_pose.x));
   rec_.log("metrics/error/y", rerun::Scalars(estimate.y - true_pose.y));
 
@@ -155,6 +157,8 @@ void Visualizer::logTimeSeriesMetrics(
   rec_.log("metrics/position/true_y", rerun::Scalars(true_pose.y));
   rec_.log("metrics/position/odom_x", rerun::Scalars(odom_pose.x));
   rec_.log("metrics/position/odom_y", rerun::Scalars(odom_pose.y));
+  rec_.log("metrics/position/ekf_x", rerun::Scalars(ekf_pose.x));
+  rec_.log("metrics/position/ekf_y", rerun::Scalars(ekf_pose.y));
 }
 
 void Visualizer::logUncertaintyEllipse(const PoseEstimate &pose,

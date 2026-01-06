@@ -117,6 +117,7 @@ if(DECODE_ENABLE_RERUN)
 endif()
 
 add_library(decode_estimator STATIC
+    src/ekf_localizer.cpp
     src/pose_estimator.cpp
     src/bearing_factor.cpp
     src/range_factor.cpp

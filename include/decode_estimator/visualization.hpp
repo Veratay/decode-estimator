@@ -55,8 +55,10 @@ public:
                               const PoseEstimate& estimate,
                               const PoseEstimate& true_pose,
                               const PoseEstimate& odom_pose,
+                              const PoseEstimate& ekf_pose,
                               double position_error,
-                              double odom_error);
+                              double odom_error,
+                              double ekf_error);
 
     /// Log uncertainty ellipse at current pose
     void logUncertaintyEllipse(const PoseEstimate& pose, size_t pose_idx);
@@ -92,8 +94,10 @@ public:
                               const PoseEstimate& /*estimate*/,
                               const PoseEstimate& /*true_pose*/,
                               const PoseEstimate& /*odom_pose*/,
+                              const PoseEstimate& /*ekf_pose*/,
                               double /*position_error*/,
-                              double /*odom_error*/) {}
+                              double /*odom_error*/,
+                              double /*ekf_error*/) {}
     void logUncertaintyEllipse(const PoseEstimate& /*pose*/, size_t /*pose_idx*/) {}
 };
 

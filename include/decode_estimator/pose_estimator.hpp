@@ -160,8 +160,10 @@ public:
                               const PoseEstimate& estimate,
                               const PoseEstimate& true_pose,
                               const PoseEstimate& odom_pose,
+                              const PoseEstimate& ekf_pose,
                               double position_error,
-                              double odom_error);
+                              double odom_error,
+                              double ekf_error);
 
 private:
     /// Create noise models from config

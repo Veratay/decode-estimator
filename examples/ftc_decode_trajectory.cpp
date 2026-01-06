@@ -6,6 +6,7 @@
  * at two adjacent corners of the field (one tag per corner).
  */
 
+#include <decode_estimator/ekf_localizer.hpp>
 #include <decode_estimator/pose_estimator.hpp>
 
 #include <chrono>
@@ -23,8 +24,8 @@ constexpr double TURN_GAIN = 2.0;      // Heading correction gain
 constexpr int NUM_ITERATIONS = 20000;
 
 // Noise parameters for simulation
-constexpr double ODOM_NOISE_XY = 0.0004;     // meters per step
-constexpr double ODOM_NOISE_THETA = 0.0002;  // radians per step
+constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
+constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
 constexpr double BEARING_NOISE = 0.025;     // radians (~1.4 degrees)
 constexpr double DISTANCE_NOISE = 0.12;     // meters (less confident than bearing)
 
@@ -96,6 +97,14 @@ int main() {
 #endif
 
     decode::PoseEstimator estimator(config);
+    decode::EKFConfig ekf_config;
+    ekf_config.prior_sigma_xy = config.prior_sigma_xy;
+    ekf_config.prior_sigma_theta = config.prior_sigma_theta;
+    ekf_config.odom_sigma_xy = config.odom_sigma_xy;
+    ekf_config.odom_sigma_theta = config.odom_sigma_theta;
+    ekf_config.default_bearing_sigma = config.default_bearing_sigma;
+    ekf_config.default_distance_sigma = config.default_distance_sigma;
+    decode::EkfLocalizer ekf(ekf_config);
 
     // AprilTags: one per corner, but only on two adjacent corners
     std::vector<decode::Landmark> landmarks = {
@@ -132,6 +141,7 @@ int main() {
     double initial_theta = 0.0;  // Facing +X direction
 
     estimator.initialize(landmarks, initial_x, initial_y, initial_theta);
+    ekf.initialize(landmarks, initial_x, initial_y, initial_theta);
 
     double true_x = initial_x;
     double true_y = initial_y;
@@ -143,9 +153,9 @@ int main() {
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Starting simulation..." << std::endl;
-    std::cout << "Step   | True Pose        | Odom-only        | Estimated        | Error"
+    std::cout << "Step   | True Pose        | Odom-only        | Estimated        | EKF             | Error"
               << std::endl;
-    std::cout << "-------|------------------|------------------|------------------|------"
+    std::cout << "-------|------------------|------------------|------------------|-----------------|------"
               << std::endl;
 
     double time = 0.0;
@@ -194,6 +204,7 @@ int main() {
         odom.dtheta = odom_dtheta;
         odom.timestamp = time;
         estimator.processOdometry(odom);
+        ekf.processOdometry(odom);
 
         if (i % DETECTION_INTERVAL == 0) {
             for (const auto& lm : landmarks) {
@@ -210,6 +221,7 @@ int main() {
                     bearing.timestamp = time;
 
                     estimator.addBearingMeasurement(bearing);
+                    ekf.addBearingMeasurement(bearing);
 
                     decode::DistanceMeasurement distance;
                     distance.tag_id = lm.id;
@@ -218,11 +230,13 @@ int main() {
                     distance.timestamp = time;
 
                     estimator.addDistanceMeasurement(distance);
+                    ekf.addDistanceMeasurement(distance);
                 }
             }
         }
 
         decode::PoseEstimate est = estimator.update();
+        decode::PoseEstimate ekf_est = ekf.getCurrentEstimate();
 
         decode::PoseEstimate true_pose;
         true_pose.x = true_x;
@@ -242,15 +256,26 @@ int main() {
                                           (est.y - true_y) * (est.y - true_y));
         double odom_error = std::sqrt((odom_x - true_x) * (odom_x - true_x) +
                                       (odom_y - true_y) * (odom_y - true_y));
+        double ekf_error = std::sqrt((ekf_est.x - true_x) * (ekf_est.x - true_x) +
+                                     (ekf_est.y - true_y) * (ekf_est.y - true_y));
 
-        estimator.logTimeSeriesMetrics(i, est, true_pose, odom_pose, position_error, odom_error);
+        estimator.logTimeSeriesMetrics(i,
+                                       est,
+                                       true_pose,
+                                       odom_pose,
+                                       ekf_est,
+                                       position_error,
+                                       odom_error,
+                                       ekf_error);
 
         if (i % 100 == 0 || i == NUM_ITERATIONS - 1) {
             std::cout << std::setw(6) << i << " | "
                       << "(" << std::setw(5) << true_x << ", " << std::setw(5) << true_y << ") | "
                       << "(" << std::setw(5) << odom_x << ", " << std::setw(5) << odom_y << ") | "
                       << "(" << std::setw(5) << est.x << ", " << std::setw(5) << est.y << ") | "
-                      << std::setw(5) << position_error << " (odom: " << odom_error << ")"
+                      << "(" << std::setw(5) << ekf_est.x << ", " << std::setw(5) << ekf_est.y << ") | "
+                      << std::setw(5) << position_error << " (odom: " << odom_error
+                      << ", ekf: " << ekf_error << ")"
                       << std::endl;
         }
 
@@ -266,16 +291,22 @@ int main() {
                                    (final_est.y - true_y) * (final_est.y - true_y));
     double final_odom_error = std::sqrt((odom_x - true_x) * (odom_x - true_x) +
                                         (odom_y - true_y) * (odom_y - true_y));
+    decode::PoseEstimate final_ekf = ekf.getCurrentEstimate();
+    double final_ekf_error = std::sqrt((final_ekf.x - true_x) * (final_ekf.x - true_x) +
+                                       (final_ekf.y - true_y) * (final_ekf.y - true_y));
 
     std::cout << "=== Final Results ===" << std::endl;
     std::cout << "True final pose:      (" << true_x << ", " << true_y << ", " << true_theta << ")"
               << std::endl;
     std::cout << "Estimated final pose: (" << final_est.x << ", " << final_est.y << ", "
               << final_est.theta << ")" << std::endl;
+    std::cout << "EKF final pose:       (" << final_ekf.x << ", " << final_ekf.y << ", "
+              << final_ekf.theta << ")" << std::endl;
     std::cout << "Odometry-only pose:   (" << odom_x << ", " << odom_y << ", " << odom_theta << ")"
               << std::endl;
     std::cout << std::endl;
     std::cout << "Estimator position error: " << final_error << " m" << std::endl;
+    std::cout << "EKF position error:       " << final_ekf_error << " m" << std::endl;
     std::cout << "Odometry-only error:      " << final_odom_error << " m" << std::endl;
     std::cout << "Average solve time:       " << estimator.getAverageSolveTimeMs() << " ms" << std::endl;
     std::cout << "Horizon size:             " << estimator.getHorizonSize() << " poses" << std::endl;

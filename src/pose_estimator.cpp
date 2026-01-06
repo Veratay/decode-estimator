@@ -407,8 +407,10 @@ void PoseEstimator::logTimeSeriesMetrics(int64_t step,
                                          const PoseEstimate& estimate,
                                          const PoseEstimate& true_pose,
                                          const PoseEstimate& odom_pose,
+                                         const PoseEstimate& ekf_pose,
                                          double position_error,
-                                         double odom_error) {
+                                         double odom_error,
+                                         double ekf_error) {
     std::lock_guard<std::mutex> lock(mutex_);
 
 #if DECODE_ENABLE_RERUN
@@ -417,16 +419,20 @@ void PoseEstimator::logTimeSeriesMetrics(int64_t step,
                                           estimate,
                                           true_pose,
                                           odom_pose,
+                                          ekf_pose,
                                           position_error,
-                                          odom_error);
+                                          odom_error,
+                                          ekf_error);
     }
 #else
     (void)step;
     (void)estimate;
     (void)true_pose;
     (void)odom_pose;
+    (void)ekf_pose;
     (void)position_error;
     (void)odom_error;
+    (void)ekf_error;
 #endif
 }
 
