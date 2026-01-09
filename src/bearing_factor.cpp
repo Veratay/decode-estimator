@@ -25,8 +25,8 @@ BearingToKnownLandmarkFactor::BearingToKnownLandmarkFactor(gtsam::Key poseKey,
     : BearingToKnownLandmarkFactor(poseKey, landmark, gtsam::Rot2(bearing_rad), model) {}
 
 gtsam::NonlinearFactor::shared_ptr BearingToKnownLandmarkFactor::clone() const {
-    return boost::static_pointer_cast<gtsam::NonlinearFactor>(
-        boost::make_shared<BearingToKnownLandmarkFactor>(*this));
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
+        std::make_shared<BearingToKnownLandmarkFactor>(*this));
 }
 
 void BearingToKnownLandmarkFactor::print(const std::string& s,
@@ -46,7 +46,7 @@ bool BearingToKnownLandmarkFactor::equals(const gtsam::NonlinearFactor& expected
 }
 
 gtsam::Vector BearingToKnownLandmarkFactor::evaluateError(
-    const gtsam::Pose2& pose, boost::optional<gtsam::Matrix&> H) const {
+    const gtsam::Pose2& pose, gtsam::OptionalMatrixType H) const {
 
     // Compute bearing manually to avoid ABI issues with GTSAM's Pose2::bearing()
     // Transform landmark to robot frame: p_local = R^T * (p_world - t)
@@ -62,7 +62,7 @@ gtsam::Vector BearingToKnownLandmarkFactor::evaluateError(
     // Predicted bearing angle in robot frame
     double predicted_theta = std::atan2(local_y, local_x);
 
-// Compute Jacobian if requested
+    // Compute Jacobian if requested
     // For bearing error = measured - predicted
     // Need to compute how error changes with pose in body frame
     if (H) {

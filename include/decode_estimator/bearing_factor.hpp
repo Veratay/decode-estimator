@@ -6,6 +6,8 @@
 #include <gtsam/base/OptionalJacobian.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 
+#include <memory>
+
 namespace decode {
 
 /**
@@ -24,7 +26,7 @@ class BearingToKnownLandmarkFactor : public gtsam::NoiseModelFactor1<gtsam::Pose
 public:
     using Base = gtsam::NoiseModelFactor1<gtsam::Pose2>;
     using This = BearingToKnownLandmarkFactor;
-    using shared_ptr = boost::shared_ptr<This>;
+    using shared_ptr = std::shared_ptr<This>;
 
     /// Default constructor for serialization
     BearingToKnownLandmarkFactor() = default;
@@ -73,7 +75,7 @@ public:
      */
     gtsam::Vector evaluateError(
         const gtsam::Pose2& pose,
-        boost::optional<gtsam::Matrix&> H = boost::none) const override;
+        gtsam::OptionalMatrixType H = nullptr) const override;
 
     /// Get the known landmark position
     const gtsam::Point2& landmark() const { return landmark_; }

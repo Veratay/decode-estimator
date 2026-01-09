@@ -17,8 +17,8 @@ RangeToKnownLandmarkFactor::RangeToKnownLandmarkFactor(gtsam::Key poseKey,
 }
 
 gtsam::NonlinearFactor::shared_ptr RangeToKnownLandmarkFactor::clone() const {
-    return boost::static_pointer_cast<gtsam::NonlinearFactor>(
-        boost::make_shared<RangeToKnownLandmarkFactor>(*this));
+    return std::static_pointer_cast<gtsam::NonlinearFactor>(
+        std::make_shared<RangeToKnownLandmarkFactor>(*this));
 }
 
 void RangeToKnownLandmarkFactor::print(const std::string& s,
@@ -38,7 +38,7 @@ bool RangeToKnownLandmarkFactor::equals(const gtsam::NonlinearFactor& expected,
 }
 
 gtsam::Vector RangeToKnownLandmarkFactor::evaluateError(
-    const gtsam::Pose2& pose, boost::optional<gtsam::Matrix&> H) const {
+    const gtsam::Pose2& pose, gtsam::OptionalMatrixType H) const {
     double dx = landmark_.x() - pose.x();
     double dy = landmark_.y() - pose.y();
     double range = std::sqrt(dx * dx + dy * dy);

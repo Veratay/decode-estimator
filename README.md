@@ -66,6 +66,92 @@ CM4_TOOLCHAIN_PREFIX=aarch64-linux-gnu \
 ./scripts/build_cm4.sh
 ```
 
+### Building for Android
+
+The project includes a JNI interface for use on Android. All dependencies (Eigen, GTSAM, Boost) are automatically cross-compiled for Android.
+
+**Prerequisites:**
+- Android NDK (r21 or later recommended)
+- Set `ANDROID_NDK_HOME` or `ANDROID_NDK` environment variable
+
+**Build:**
+
+```bash
+# Basic Android build (arm64-v8a, API 21)
+./scripts/build.sh --android
+
+# Specify ABI and API level
+./scripts/build.sh --android --android-abi arm64-v8a --android-api 28
+
+# Specify custom NDK path
+./scripts/build.sh --android --android-ndk /path/to/ndk
+
+# Available ABIs: armeabi-v7a, arm64-v8a, x86, x86_64
+./scripts/build.sh --android --android-abi armeabi-v7a
+```
+
+**Output:**
+- `build/libdecode_estimator_jni.so` - JNI shared library for Android
+
+**Note:** The first Android build will take 15-30 minutes as it compiles Boost, Eigen, and GTSAM from source. Subsequent builds are much faster due to CMake caching.
+
+**JNI Interface:**
+
+The JNI interface is available through `com.decode.estimator.PoseEstimatorBridge`:
+
+```java
+// Create with default config
+PoseEstimatorBridge bridge = new PoseEstimatorBridge();
+long handle = bridge.nativeCreate();
+
+// OR create with custom noise parameters
+long handle = bridge.nativeCreateWithConfig(
+    0.05,  // prior_sigma_xy (m)
+    0.02,  // prior_sigma_theta (rad)
+    0.02,  // odom_sigma_xy (m)
+    0.01,  // odom_sigma_theta (rad)
+    0.05,  // default_bearing_sigma (rad, ~3 degrees)
+    0.2    // default_distance_sigma (m)
+);
+
+// Initialize with landmarks
+int[] tagIds = {1, 2, 3};
+double[] landmarkX = {0.0, 5.0, 5.0};
+double[] landmarkY = {5.0, 5.0, 0.0};
+bridge.nativeInitialize(handle, tagIds, landmarkX, landmarkY, 0.0, 0.0, 0.0);
+
+// Process odometry
+bridge.nativeProcessOdometry(handle, dx, dy, dtheta, timestamp);
+
+// Add bearing measurement
+bridge.nativeAddBearingMeasurement(handle, tagId, bearing, uncertainty, timestamp);
+
+// Add distance measurement (optional)
+bridge.nativeAddDistanceMeasurement(handle, tagId, distance, uncertainty, timestamp);
+
+// Update and get pose
+bridge.nativeUpdate(handle);
+double[] pose = bridge.nativeGetCurrentEstimate(handle);  // [x, y, theta, timestamp]
+
+// Get pose with covariance (more expensive)
+double[] poseWithCov = bridge.nativeGetCurrentEstimateWithCovariance(handle);
+// Returns [x, y, theta, timestamp, cov[0], cov[1], ..., cov[8]]
+// Covariance is 3x3 matrix in row-major order
+
+// Clean up
+bridge.nativeDestroy(handle);
+```
+
+**Noise Parameter Guidelines:**
+- `prior_sigma_xy`: Initial position uncertainty (typical: 0.05m = 5cm)
+- `prior_sigma_theta`: Initial heading uncertainty (typical: 0.02rad ≈ 1.1°)
+- `odom_sigma_xy`: Odometry position noise per update (typical: 0.02m = 2cm)
+- `odom_sigma_theta`: Odometry heading noise per update (typical: 0.01rad ≈ 0.6°)
+- `default_bearing_sigma`: Bearing measurement uncertainty (typical: 0.05rad ≈ 3°)
+- `default_distance_sigma`: Distance measurement uncertainty (typical: 0.2m = 20cm)
+
+Tune these based on your sensor characteristics and testing.
+
 ### Notes
 
 - The build scripts fetch Eigen/GTSAM from their upstream git repositories; network access is required the first time.
