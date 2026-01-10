@@ -3,10 +3,11 @@
 #include <gtsam/geometry/Point3.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/geometry/Rot3.h>
-#include <gtsam/geometry/Cal3_S2.h>
-#include <gtsam/geometry/PinholeCamera.h>
+#include "decode_estimator/camera_model.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <iostream>
 
@@ -22,6 +23,50 @@ double wrapAngle(double angle) {
         angle += 2.0 * M_PI;
     }
     return angle;
+}
+
+void applyOdometry(Eigen::Vector3d& pose, const OdometryMeasurement& odom) {
+    double theta = pose(2);
+    double c = std::cos(theta);
+    double s = std::sin(theta);
+    pose(0) += c * odom.dx - s * odom.dy;
+    pose(1) += s * odom.dx + c * odom.dy;
+    pose(2) = wrapAngle(pose(2) + odom.dtheta);
+}
+
+Eigen::Vector3d composePose(const Eigen::Vector3d& base, const Eigen::Vector3d& delta) {
+    double c = std::cos(base(2));
+    double s = std::sin(base(2));
+    Eigen::Vector3d out;
+    out(0) = base(0) + c * delta(0) - s * delta(1);
+    out(1) = base(1) + s * delta(0) + c * delta(1);
+    out(2) = wrapAngle(base(2) + delta(2));
+    return out;
+}
+
+double quadArea(const std::vector<std::pair<double, double>>& corners) {
+    if (corners.size() != 4) {
+        return 0.0;
+    }
+
+    double area = 0.0;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& p1 = corners[i];
+        const auto& p2 = corners[(i + 1) % 4];
+        area += p1.first * p2.second - p2.first * p1.second;
+    }
+    return std::abs(area) * 0.5;
+}
+
+double angleBetween(const gtsam::Point3& a, const gtsam::Point3& b) {
+    double na = a.norm();
+    double nb = b.norm();
+    if (na <= 1e-9 || nb <= 1e-9) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double cos_angle = a.dot(b) / (na * nb);
+    cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
+    return std::acos(cos_angle);
 }
 
 } // namespace
@@ -41,6 +86,12 @@ void EkfLocalizer::initialize(const std::vector<Landmark>& landmarks,
     covariance_(1, 1) = config_.prior_sigma_xy * config_.prior_sigma_xy;
     covariance_(2, 2) = config_.prior_sigma_theta * config_.prior_sigma_theta;
     current_timestamp_ = 0.0;
+    last_tag_timestamp_ = -1.0;
+    post_unstable_ = false;
+    unstable_until_timestamp_ = -1.0;
+    settle_updates_remaining_ = 0;
+    last_stable_state_ = state_;
+    odom_since_stable_.setZero();
     initialized_ = true;
 }
 
@@ -52,6 +103,12 @@ void EkfLocalizer::reset() {
     covariance_.setZero();
     current_timestamp_ = 0.0;
     landmark_map_.clear();
+    last_tag_timestamp_ = -1.0;
+    post_unstable_ = false;
+    unstable_until_timestamp_ = -1.0;
+    settle_updates_remaining_ = 0;
+    last_stable_state_.setZero();
+    odom_since_stable_.setZero();
 }
 
 PoseEstimate EkfLocalizer::processOdometry(const OdometryMeasurement& odom) {
@@ -92,6 +149,15 @@ PoseEstimate EkfLocalizer::processOdometry(const OdometryMeasurement& odom) {
     covariance_ = F * covariance_ * F.transpose() + V * Q * V.transpose();
     current_timestamp_ = odom.timestamp;
 
+    if (config_.enable_post_process) {
+        if (post_unstable_) {
+            applyOdometry(odom_since_stable_, odom);
+        } else {
+            last_stable_state_ = state_;
+            odom_since_stable_.setZero();
+        }
+    }
+
     PoseEstimate estimate;
     estimate.x = state_(0);
     estimate.y = state_(1);
@@ -121,6 +187,23 @@ PoseEstimate EkfLocalizer::getCurrentEstimate() const {
     return estimate;
 }
 
+PoseEstimate EkfLocalizer::getPostProcessedEstimate() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    Eigen::Vector3d pose = state_;
+    if (config_.enable_post_process && post_unstable_) {
+        pose = composePose(last_stable_state_, odom_since_stable_);
+    }
+
+    PoseEstimate estimate;
+    estimate.x = pose(0);
+    estimate.y = pose(1);
+    estimate.theta = pose(2);
+    estimate.timestamp = current_timestamp_;
+    estimate.has_covariance = false;
+    return estimate;
+}
+
 Eigen::Matrix3d EkfLocalizer::getCovariance() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return covariance_;
@@ -138,6 +221,23 @@ void EkfLocalizer::updateTag(const TagMeasurement& tag) {
     }
     
     if (tag.corners.size() != 4) return;
+    if (config_.enable_tag_gating) {
+        double area_px = quadArea(tag.corners);
+        if (area_px < config_.min_tag_area_px) {
+            return;
+        }
+    }
+
+    if (config_.enable_post_process) {
+        if (last_tag_timestamp_ >= 0.0 &&
+            (tag.timestamp - last_tag_timestamp_) > config_.post_process_vision_gap_s) {
+            post_unstable_ = true;
+            unstable_until_timestamp_ = tag.timestamp + config_.post_process_settle_s;
+            settle_updates_remaining_ = config_.post_process_settle_updates;
+            odom_since_stable_.setZero();
+        }
+        last_tag_timestamp_ = tag.timestamp;
+    }
 
     // Measurement vector z (8x1)
     Eigen::Matrix<double, 8, 1> z;
@@ -147,7 +247,16 @@ void EkfLocalizer::updateTag(const TagMeasurement& tag) {
     }
 
     // Camera Intrinsics
-    gtsam::Cal3_S2 intrinsics(config_.fx, config_.fy, 0, config_.cx, config_.cy);
+    CameraModel intrinsics;
+    intrinsics.fx = config_.fx;
+    intrinsics.fy = config_.fy;
+    intrinsics.cx = config_.cx;
+    intrinsics.cy = config_.cy;
+    intrinsics.k1 = config_.k1;
+    intrinsics.k2 = config_.k2;
+    intrinsics.k3 = config_.k3;
+    intrinsics.p1 = config_.p1;
+    intrinsics.p2 = config_.p2;
     
     // Extrinsics (constant)
     gtsam::Pose3 extrinsics(
@@ -177,22 +286,37 @@ void EkfLocalizer::updateTag(const TagMeasurement& tag) {
         gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad), gtsam::Point3(0,0,0));
         
         gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
-        gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
 
         Eigen::Matrix<double, 8, 1> h_vec;
         for(int i=0; i<4; ++i) {
             gtsam::Point3 pt_world = tag_pose.transformFrom(corners_local[i]);
-            try {
-                gtsam::Point2 uv = camera.project(pt_world);
+            gtsam::Point2 uv;
+            if (projectPoint(camera_pose, intrinsics, pt_world, &uv)) {
                 h_vec(2*i) = uv.x();
                 h_vec(2*i+1) = uv.y();
-            } catch (...) {
+            } else {
                 h_vec(2*i) = 0;
                 h_vec(2*i+1) = 0;
             }
         }
         return h_vec;
     };
+
+    if (config_.enable_tag_gating) {
+        gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(state_(2), 0, 0),
+                                gtsam::Point3(state_(0), state_(1), 0));
+        gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad), gtsam::Point3(0, 0, 0));
+        gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+        gtsam::Point3 tag_normal_world =
+            tag_pose.rotation().matrix() * gtsam::Point3(0.0, 0.0, 1.0);
+        gtsam::Point3 tag_to_camera =
+            camera_pose.translation() - tag_pose.translation();
+        double angle = angleBetween(tag_normal_world, tag_to_camera);
+        double max_angle = config_.max_tag_view_angle_deg * M_PI / 180.0;
+        if (angle > max_angle) {
+            return;
+        }
+    }
 
     Eigen::Matrix<double, 8, 1> z_pred = predict(state_);
     Eigen::Matrix<double, 8, 1> residual = z - z_pred;
@@ -227,6 +351,26 @@ void EkfLocalizer::updateTag(const TagMeasurement& tag) {
     // P = (I - K*H)*P
     Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
     covariance_ = (I - K * H) * covariance_;
+
+    if (config_.enable_post_process) {
+        if (post_unstable_) {
+            if (settle_updates_remaining_ > 0) {
+                settle_updates_remaining_--;
+            }
+        }
+        if (post_unstable_ &&
+            tag.timestamp >= unstable_until_timestamp_ &&
+            settle_updates_remaining_ <= 0) {
+            post_unstable_ = false;
+            last_stable_state_ = state_;
+            odom_since_stable_.setZero();
+        }
+        if (!post_unstable_) {
+            last_stable_state_ = state_;
+            odom_since_stable_.setZero();
+        }
+    }
+
 }
 
 } // namespace decode

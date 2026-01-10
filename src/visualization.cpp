@@ -136,8 +136,85 @@ void Visualizer::logLandmarkRays(
 void Visualizer::logTimeSeriesMetrics(
     int64_t step, const PoseEstimate &estimate, const PoseEstimate &true_pose,
     const PoseEstimate &odom_pose, const PoseEstimate &ekf_pose,
-    double position_error, double odom_error, double ekf_error) {
+    const PoseEstimate &post_estimate, const PoseEstimate &post_ekf,
+    double position_error, double odom_error, double ekf_error,
+    double post_position_error, double post_ekf_error) {
   rec_.set_time_sequence("step", step);
+
+  if (step == 0) {
+    estimate_path_.clear();
+    true_path_.clear();
+    ekf_path_.clear();
+    odom_path_.clear();
+    post_estimate_path_.clear();
+    post_ekf_path_.clear();
+  }
+
+  estimate_path_.push_back(
+      {static_cast<float>(estimate.x), static_cast<float>(estimate.y), 0.0f});
+  true_path_.push_back(
+      {static_cast<float>(true_pose.x), static_cast<float>(true_pose.y), 0.0f});
+  ekf_path_.push_back(
+      {static_cast<float>(ekf_pose.x), static_cast<float>(ekf_pose.y), 0.0f});
+  odom_path_.push_back(
+      {static_cast<float>(odom_pose.x), static_cast<float>(odom_pose.y), 0.0f});
+  post_estimate_path_.push_back({static_cast<float>(post_estimate.x),
+                                 static_cast<float>(post_estimate.y), 0.0f});
+  post_ekf_path_.push_back(
+      {static_cast<float>(post_ekf.x), static_cast<float>(post_ekf.y), 0.0f});
+  const size_t max_points = 300;
+  if (estimate_path_.size() > max_points) {
+    estimate_path_.erase(estimate_path_.begin(),
+                         estimate_path_.begin() + (estimate_path_.size() - max_points));
+  }
+  if (true_path_.size() > max_points) {
+    true_path_.erase(true_path_.begin(),
+                     true_path_.begin() + (true_path_.size() - max_points));
+  }
+  if (ekf_path_.size() > max_points) {
+    ekf_path_.erase(ekf_path_.begin(),
+                    ekf_path_.begin() + (ekf_path_.size() - max_points));
+  }
+  if (odom_path_.size() > max_points) {
+    odom_path_.erase(odom_path_.begin(),
+                     odom_path_.begin() + (odom_path_.size() - max_points));
+  }
+  if (post_estimate_path_.size() > max_points) {
+    post_estimate_path_.erase(
+        post_estimate_path_.begin(),
+        post_estimate_path_.begin() + (post_estimate_path_.size() - max_points));
+  }
+  if (post_ekf_path_.size() > max_points) {
+    post_ekf_path_.erase(
+        post_ekf_path_.begin(),
+        post_ekf_path_.begin() + (post_ekf_path_.size() - max_points));
+  }
+
+  rerun::LineStrip3D estimate_strip(estimate_path_);
+  rerun::LineStrip3D true_strip(true_path_);
+  rerun::LineStrip3D ekf_strip(ekf_path_);
+  rerun::LineStrip3D odom_strip(odom_path_);
+  rerun::LineStrip3D post_estimate_strip(post_estimate_path_);
+  rerun::LineStrip3D post_ekf_strip(post_ekf_path_);
+
+  rec_.log("world/trajectory/estimate",
+           rerun::LineStrips3D(estimate_strip)
+               .with_colors({rerun::Color(0, 128, 255)})); // Blue
+  rec_.log("world/trajectory/true",
+           rerun::LineStrips3D(true_strip)
+               .with_colors({rerun::Color(255, 0, 0)})); // Red
+  rec_.log("world/trajectory/ekf",
+           rerun::LineStrips3D(ekf_strip)
+               .with_colors({rerun::Color(0, 200, 0)})); // Green
+  rec_.log("world/trajectory/odom",
+           rerun::LineStrips3D(odom_strip)
+               .with_colors({rerun::Color(255, 165, 0)})); // Orange
+  rec_.log("world/trajectory/post_estimate",
+           rerun::LineStrips3D(post_estimate_strip)
+               .with_colors({rerun::Color(153, 102, 255)})); // Violet
+  rec_.log("world/trajectory/post_ekf",
+           rerun::LineStrips3D(post_ekf_strip)
+               .with_colors({rerun::Color(0, 200, 200)})); // Cyan
 
   rec_.log("world/true_robot/position",
            rerun::Points3D(
@@ -148,8 +225,13 @@ void Visualizer::logTimeSeriesMetrics(
   rec_.log("metrics/error/position_estimate", rerun::Scalars(position_error));
   rec_.log("metrics/error/position_odom", rerun::Scalars(odom_error));
   rec_.log("metrics/error/position_ekf", rerun::Scalars(ekf_error));
+  rec_.log("metrics/error/position_post_estimate",
+           rerun::Scalars(post_position_error));
+  rec_.log("metrics/error/position_post_ekf", rerun::Scalars(post_ekf_error));
   rec_.log("metrics/error/x", rerun::Scalars(estimate.x - true_pose.x));
   rec_.log("metrics/error/y", rerun::Scalars(estimate.y - true_pose.y));
+  rec_.log("metrics/error/theta",
+           rerun::Scalars(estimate.theta - true_pose.theta));
 
   rec_.log("metrics/position/estimate_x", rerun::Scalars(estimate.x));
   rec_.log("metrics/position/estimate_y", rerun::Scalars(estimate.y));
@@ -159,6 +241,76 @@ void Visualizer::logTimeSeriesMetrics(
   rec_.log("metrics/position/odom_y", rerun::Scalars(odom_pose.y));
   rec_.log("metrics/position/ekf_x", rerun::Scalars(ekf_pose.x));
   rec_.log("metrics/position/ekf_y", rerun::Scalars(ekf_pose.y));
+  rec_.log("metrics/position/post_estimate_x",
+           rerun::Scalars(post_estimate.x));
+  rec_.log("metrics/position/post_estimate_y",
+           rerun::Scalars(post_estimate.y));
+  rec_.log("metrics/position/post_ekf_x", rerun::Scalars(post_ekf.x));
+  rec_.log("metrics/position/post_ekf_y", rerun::Scalars(post_ekf.y));
+  rec_.log("metrics/position/estimate_theta", rerun::Scalars(estimate.theta));
+  rec_.log("metrics/position/true_theta", rerun::Scalars(true_pose.theta));
+  rec_.log("metrics/position/odom_theta", rerun::Scalars(odom_pose.theta));
+  rec_.log("metrics/position/ekf_theta", rerun::Scalars(ekf_pose.theta));
+  rec_.log("metrics/position/post_estimate_theta",
+           rerun::Scalars(post_estimate.theta));
+  rec_.log("metrics/position/post_ekf_theta",
+           rerun::Scalars(post_ekf.theta));
+}
+
+void Visualizer::logCamera(const gtsam::Pose3 &camera_pose,
+                           const CameraModel &intrinsics) {
+  auto axis_angle = camera_pose.rotation().axisAngle();
+  gtsam::Point3 axis = axis_angle.first.point3();
+
+  rec_.log("world/camera",
+           rerun::Transform3D::from_translation_rotation(
+               {static_cast<float>(camera_pose.x()),
+                static_cast<float>(camera_pose.y()),
+                static_cast<float>(camera_pose.z())},
+               rerun::Rotation3D(rerun::datatypes::RotationAxisAngle(
+                   rerun::datatypes::Vec3D{static_cast<float>(axis.x()),
+                                           static_cast<float>(axis.y()),
+                                           static_cast<float>(axis.z())},
+                   rerun::datatypes::Angle::radians(
+                       static_cast<float>(axis_angle.second))))));
+
+  float width =
+      static_cast<float>(std::max(1.0, intrinsics.cx * 2.0));
+  float height =
+      static_cast<float>(std::max(1.0, intrinsics.cy * 2.0));
+
+  rec_.log("world/camera",
+           rerun::Pinhole::from_focal_length_and_resolution(
+               {static_cast<float>(intrinsics.fx),
+                static_cast<float>(intrinsics.fy)},
+               {width, height}));
+}
+
+void Visualizer::logTagCornerRays(
+    int32_t tag_id, const gtsam::Pose3 &camera_pose,
+    const std::vector<gtsam::Point3> &corners_world) {
+  if (corners_world.empty()) {
+    return;
+  }
+
+  std::vector<std::vector<rerun::Position3D>> lines;
+  lines.reserve(corners_world.size());
+
+  rerun::Position3D camera_pos{static_cast<float>(camera_pose.x()),
+                               static_cast<float>(camera_pose.y()),
+                               static_cast<float>(camera_pose.z())};
+
+  for (const auto &corner : corners_world) {
+    lines.push_back({camera_pos,
+                     {static_cast<float>(corner.x()),
+                      static_cast<float>(corner.y()),
+                      static_cast<float>(corner.z())}});
+  }
+
+  rec_.log("world/measurements/tag_corners/" + std::to_string(tag_id),
+           rerun::LineStrips3D(lines)
+               .with_colors({rerun::Color(0, 255, 255, 200)}) // Cyan
+               .with_radii({0.02f}));
 }
 
 void Visualizer::logUncertaintyEllipse(const PoseEstimate &pose,

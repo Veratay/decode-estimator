@@ -26,6 +26,14 @@ foreach(var ANDROID_ABI ANDROID_PLATFORM ANDROID_STL ANDROID_ARM_NEON ANDROID_PI
     endif()
 endforeach()
 
+# Pass compiler flags to external projects
+if(CMAKE_CXX_FLAGS)
+    list(APPEND EXTERNAL_ANDROID_ARGS "-DCMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
+endif()
+if(CMAKE_C_FLAGS)
+    list(APPEND EXTERNAL_ANDROID_ARGS "-DCMAKE_C_FLAGS=${CMAKE_C_FLAGS}")
+endif()
+
 # Find JNI for Android builds or if available on host
 find_package(JNI QUIET)
 

@@ -54,7 +54,14 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
     JNIEnv* env, jclass, jdouble prior_sigma_xy, jdouble prior_sigma_theta,
     jdouble odom_sigma_xy, jdouble odom_sigma_theta, jdouble default_pixel_sigma,
+    jdouble relinearize_threshold, jint relinearize_skip, jboolean enable_partial_relinearization,
+    jboolean compact_odometry,
+    jboolean enable_robust_tag_loss, jint robust_tag_loss, jdouble robust_tag_loss_k,
+    jboolean enable_tag_gating, jdouble min_tag_area_px, jdouble max_tag_view_angle_deg,
+    jboolean enable_post_process, jdouble post_process_vision_gap_s,
+    jdouble post_process_settle_s, jint post_process_settle_updates,
     jdouble fx, jdouble fy, jdouble cx, jdouble cy,
+    jdouble k1, jdouble k2, jdouble k3, jdouble p1, jdouble p2,
     jdouble camera_offset_x, jdouble camera_offset_y, jdouble camera_offset_z,
     jdouble camera_roll, jdouble camera_pitch, jdouble camera_yaw) {
     try {
@@ -64,16 +71,48 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
         config.odom_sigma_xy = odom_sigma_xy;
         config.odom_sigma_theta = odom_sigma_theta;
         config.default_pixel_sigma = default_pixel_sigma;
+        config.relinearize_threshold = relinearize_threshold;
+        config.relinearize_skip = static_cast<int>(relinearize_skip);
+        config.enable_partial_relinearization = (enable_partial_relinearization == JNI_TRUE);
+        config.compact_odometry = (compact_odometry == JNI_TRUE);
+        config.enable_robust_tag_loss = (enable_robust_tag_loss == JNI_TRUE);
+        config.robust_tag_loss_k = robust_tag_loss_k;
+        config.enable_tag_gating = (enable_tag_gating == JNI_TRUE);
+        config.min_tag_area_px = min_tag_area_px;
+        config.max_tag_view_angle_deg = max_tag_view_angle_deg;
+        config.enable_post_process = (enable_post_process == JNI_TRUE);
+        config.post_process_vision_gap_s = post_process_vision_gap_s;
+        config.post_process_settle_s = post_process_settle_s;
+        config.post_process_settle_updates = static_cast<int>(post_process_settle_updates);
         config.fx = fx;
         config.fy = fy;
         config.cx = cx;
         config.cy = cy;
+        config.k1 = k1;
+        config.k2 = k2;
+        config.k3 = k3;
+        config.p1 = p1;
+        config.p2 = p2;
         config.camera_offset_x = camera_offset_x;
         config.camera_offset_y = camera_offset_y;
         config.camera_offset_z = camera_offset_z;
         config.camera_roll = camera_roll;
         config.camera_pitch = camera_pitch;
         config.camera_yaw = camera_yaw;
+        switch (robust_tag_loss) {
+            case 0:
+                config.robust_tag_loss = decode::RobustLossType::Huber;
+                break;
+            case 1:
+                config.robust_tag_loss = decode::RobustLossType::Tukey;
+                break;
+            case 2:
+                config.robust_tag_loss = decode::RobustLossType::Cauchy;
+                break;
+            default:
+                config.robust_tag_loss = decode::RobustLossType::Huber;
+                break;
+        }
 
         auto* estimator = new decode::PoseEstimator(config);
         return reinterpret_cast<jlong>(estimator);

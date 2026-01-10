@@ -1,9 +1,10 @@
 #pragma once
 
-#include <gtsam/geometry/Cal3_S2.h>
 #include <gtsam/geometry/Pose2.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
+
+#include "camera_model.hpp"
 
 #include <vector>
 
@@ -37,7 +38,7 @@ public:
     TagProjectionFactor(gtsam::Key poseKey,
                         const gtsam::Pose3& tag_pose_world,
                         double tag_size,
-                        const gtsam::Cal3_S2& camera_intrinsics,
+                        const CameraModel& camera_intrinsics,
                         const gtsam::Pose3& camera_extrinsics_body,
                         double turret_yaw,
                         const std::vector<std::pair<double, double>>& measured_corners,
@@ -62,7 +63,7 @@ public:
 private:
     gtsam::Pose3 tag_pose_world_;
     double tag_size_;
-    gtsam::Cal3_S2 camera_intrinsics_;
+    CameraModel camera_intrinsics_;
     gtsam::Pose3 camera_extrinsics_body_; // T_body_camera
     double turret_yaw_;
     gtsam::Vector measured_; // 8 elements: u1, v1, u2, v2, ...

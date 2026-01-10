@@ -1,18 +1,19 @@
 #include "decode_estimator/pose_estimator.hpp"
 #include "decode_estimator/tag_projection_factor.hpp"
 #include "decode_estimator/visualization.hpp"
+#include "decode_estimator/camera_model.hpp"
 
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
-#include <gtsam/geometry/Cal3_S2.h>
-#include <gtsam/geometry/PinholeCamera.h>
 #include <gtsam/geometry/Pose3.h>
 
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <iostream>
 #include <stdexcept>
 
@@ -20,6 +21,35 @@
 using gtsam::symbol_shorthand::X;
 
 namespace decode {
+
+namespace {
+
+double quadArea(const std::vector<std::pair<double, double>>& corners) {
+    if (corners.size() != 4) {
+        return 0.0;
+    }
+
+    double area = 0.0;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& p1 = corners[i];
+        const auto& p2 = corners[(i + 1) % 4];
+        area += p1.first * p2.second - p2.first * p1.second;
+    }
+    return std::abs(area) * 0.5;
+}
+
+double angleBetween(const gtsam::Point3& a, const gtsam::Point3& b) {
+    double na = a.norm();
+    double nb = b.norm();
+    if (na <= 1e-9 || nb <= 1e-9) {
+        return std::numeric_limits<double>::infinity();
+    }
+    double cos_angle = a.dot(b) / (na * nb);
+    cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
+    return std::acos(cos_angle);
+}
+
+} // namespace
 
 PoseEstimator::PoseEstimator(const EstimatorConfig& config) : config_(config) {
     createNoiseModels();
@@ -113,6 +143,12 @@ void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
     pending_odom_delta_ = gtsam::Pose2();
     pending_odom_steps_ = 0;
     pending_tags_.clear();
+    last_tag_timestamp_ = -1.0;
+    post_unstable_ = false;
+    unstable_until_timestamp_ = -1.0;
+    settle_updates_remaining_ = 0;
+    last_stable_pose_ = current_pose_;
+    odom_since_stable_ = gtsam::Pose2();
 
     resetHorizonWithPrior(current_pose_, prior_noise_);
 
@@ -146,6 +182,12 @@ void PoseEstimator::reset() {
     pending_graph_.resize(0);
     pending_values_.clear();
     landmark_map_.clear();
+    last_tag_timestamp_ = -1.0;
+    post_unstable_ = false;
+    unstable_until_timestamp_ = -1.0;
+    settle_updates_remaining_ = 0;
+    last_stable_pose_ = gtsam::Pose2();
+    odom_since_stable_ = gtsam::Pose2();
 
     createISAM2();
 }
@@ -184,6 +226,15 @@ PoseEstimate PoseEstimator::processOdometry(const OdometryMeasurement& odom) {
         current_timestamp_ = odom.timestamp;
     }
 
+    if (config_.enable_post_process) {
+        if (post_unstable_) {
+            odom_since_stable_ = odom_since_stable_.compose(delta);
+        } else {
+            last_stable_pose_ = current_pose_;
+            odom_since_stable_ = gtsam::Pose2();
+        }
+    }
+
     // Return current predicted estimate
     PoseEstimate estimate;
     estimate.x = current_pose_.x();
@@ -198,11 +249,15 @@ PoseEstimate PoseEstimator::processOdometry(const OdometryMeasurement& odom) {
 void PoseEstimator::addTagMeasurement(const TagMeasurement& measurement) {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_tags_.push_back(measurement);
+    last_turret_yaw_rad_ = measurement.turret_yaw_rad;
 }
 
 void PoseEstimator::addTagMeasurements(const std::vector<TagMeasurement>& measurements) {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_tags_.insert(pending_tags_.end(), measurements.begin(), measurements.end());
+    if (!measurements.empty()) {
+        last_turret_yaw_rad_ = measurements.back().turret_yaw_rad;
+    }
 }
 
 PoseEstimate PoseEstimator::update() {
@@ -212,6 +267,24 @@ PoseEstimate PoseEstimator::update() {
         throw std::runtime_error("PoseEstimator not initialized");
     }
 
+    // Configuration objects
+    CameraModel intrinsics;
+    intrinsics.fx = config_.fx;
+    intrinsics.fy = config_.fy;
+    intrinsics.cx = config_.cx;
+    intrinsics.cy = config_.cy;
+    intrinsics.k1 = config_.k1;
+    intrinsics.k2 = config_.k2;
+    intrinsics.k3 = config_.k3;
+    intrinsics.p1 = config_.p1;
+    intrinsics.p2 = config_.p2;
+    gtsam::Pose3 extrinsics(
+        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
+        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
+    );
+    gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(current_pose_.theta(), 0.0, 0.0),
+                            gtsam::Point3(current_pose_.x(), current_pose_.y(), 0.0));
+
     bool has_vision = !pending_tags_.empty();
     if (!has_vision) {
         PoseEstimate estimate;
@@ -220,10 +293,17 @@ PoseEstimate PoseEstimator::update() {
         estimate.theta = current_pose_.theta();
         estimate.timestamp = current_timestamp_;
         estimate.has_covariance = false;
+#if DECODE_ENABLE_RERUN
+        if (visualizer_) {
+            gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(last_turret_yaw_rad_),
+                                     gtsam::Point3(0, 0, 0));
+            gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+            visualizer_->logCamera(camera_pose, intrinsics);
+            visualizer_->logPose(estimate, current_pose_idx_);
+        }
+#endif
         return estimate;
     }
-
-    std::unordered_set<int32_t> visible_tags;
 
     if (config_.compact_odometry && pending_odom_steps_ > 0) {
         if (current_pose_idx_ + 1 >= kHorizonCapacity) {
@@ -254,21 +334,18 @@ PoseEstimate PoseEstimator::update() {
         pending_values_.insert(X(current_pose_idx_), predicted);
     }
 
-    // Configuration objects
-    gtsam::Cal3_S2 intrinsics(config_.fx, config_.fy, 0.0, config_.cx, config_.cy);
-    gtsam::Pose3 extrinsics(
-        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
-        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
-    );
-    gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(current_pose_.theta(), 0.0, 0.0),
-                            gtsam::Point3(current_pose_.x(), current_pose_.y(), 0.0));
-
     auto is_tag_visible = [&](const TagMeasurement& tag,
                               const gtsam::Pose3& tag_pose_world,
                               double tag_size) {
+        if (config_.enable_tag_gating) {
+            double area_px = quadArea(tag.corners);
+            if (area_px < config_.min_tag_area_px) {
+                return false;
+            }
+        }
+
         gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad), gtsam::Point3(0, 0, 0));
         gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
-        gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
 
         double s = tag_size / 2.0;
         const std::array<gtsam::Point3, 4> corners_local = {
@@ -279,8 +356,22 @@ PoseEstimate PoseEstimator::update() {
         };
 
         for (const auto& corner : corners_local) {
-            auto projected = camera.projectSafe(tag_pose_world.transformFrom(corner));
-            if (!projected.second) {
+            gtsam::Point2 projected;
+            if (!projectPoint(camera_pose, intrinsics,
+                              tag_pose_world.transformFrom(corner),
+                              &projected)) {
+                return false;
+            }
+        }
+
+        if (config_.enable_tag_gating) {
+            gtsam::Point3 tag_normal_world =
+                tag_pose_world.rotation().matrix() * gtsam::Point3(0.0, 0.0, 1.0);
+            gtsam::Point3 tag_to_camera =
+                camera_pose.translation() - tag_pose_world.translation();
+            double angle = angleBetween(tag_normal_world, tag_to_camera);
+            double max_angle = config_.max_tag_view_angle_deg * M_PI / 180.0;
+            if (angle > max_angle) {
                 return false;
             }
         }
@@ -288,42 +379,101 @@ PoseEstimate PoseEstimator::update() {
         return true;
     };
 
+    double max_tag_timestamp = -std::numeric_limits<double>::infinity();
+    for (const auto& tag : pending_tags_) {
+        max_tag_timestamp = std::max(max_tag_timestamp, tag.timestamp);
+    }
+    if (config_.enable_post_process) {
+        if (last_tag_timestamp_ >= 0.0 &&
+            (max_tag_timestamp - last_tag_timestamp_) > config_.post_process_vision_gap_s) {
+            post_unstable_ = true;
+            unstable_until_timestamp_ = max_tag_timestamp + config_.post_process_settle_s;
+            settle_updates_remaining_ = config_.post_process_settle_updates;
+            last_stable_pose_ = current_pose_;
+            odom_since_stable_ = gtsam::Pose2();
+        }
+        last_tag_timestamp_ = max_tag_timestamp;
+    }
     // Process pending tag measurements
     for (const auto& tag : pending_tags_) {
-        auto landmark_opt = landmark_map_.getLandmark(tag.tag_id);
-        if (!landmark_opt) {
-            // Unknown tag ID - skip
-            continue;
-        }
+            auto landmark_opt = landmark_map_.getLandmark(tag.tag_id);
+            if (!landmark_opt) {
+                // Unknown tag ID - skip
+                continue;
+            }
 
-        visible_tags.insert(tag.tag_id);
+            gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad),
+                                     gtsam::Point3(0, 0, 0));
+            gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
 
-        // Create 8D noise model
-        double sigma = (tag.pixel_sigma > 0) ? tag.pixel_sigma
-                                             : config_.default_pixel_sigma;
-        auto pixel_noise = gtsam::noiseModel::Isotropic::Sigma(8, sigma);
+            // Convert Landmark to Pose3
+            gtsam::Pose3 tag_pose_world(
+                gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
+                gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
+            );
 
-        // Convert Landmark to Pose3
-        gtsam::Pose3 tag_pose_world(
-            gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
-            gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
-        );
+#if DECODE_ENABLE_RERUN
+            if (visualizer_) {
+                double s = landmark_opt->size / 2.0;
+                const std::array<gtsam::Point3, 4> corners_local = {
+                    gtsam::Point3(-s, -s, 0.0),
+                    gtsam::Point3( s, -s, 0.0),
+                    gtsam::Point3( s,  s, 0.0),
+                    gtsam::Point3(-s,  s, 0.0),
+                };
 
-        if (!is_tag_visible(tag, tag_pose_world, landmark_opt->size)) {
-            continue;
-        }
+                std::vector<gtsam::Point3> corners_world;
+                corners_world.reserve(corners_local.size());
+                for (const auto& corner : corners_local) {
+                    corners_world.push_back(tag_pose_world.transformFrom(corner));
+                }
 
-        // Add projection factor
-        pending_graph_.add(TagProjectionFactor(
-            X(current_pose_idx_),
-            tag_pose_world,
-            landmark_opt->size,
-            intrinsics,
-            extrinsics,
-            tag.turret_yaw_rad,
-            tag.corners,
-            pixel_noise
-        ));
+                visualizer_->logCamera(camera_pose, intrinsics);
+                visualizer_->logTagCornerRays(tag.tag_id, camera_pose, corners_world);
+            }
+#endif
+
+            // Create 8D noise model
+            double sigma = (tag.pixel_sigma > 0) ? tag.pixel_sigma
+                                                 : config_.default_pixel_sigma;
+
+            gtsam::SharedNoiseModel pixel_noise =
+                gtsam::noiseModel::Isotropic::Sigma(8, sigma);
+            if (config_.enable_robust_tag_loss) {
+                gtsam::noiseModel::mEstimator::Base::shared_ptr estimator;
+                switch (config_.robust_tag_loss) {
+                    case RobustLossType::Huber:
+                        estimator = gtsam::noiseModel::mEstimator::Huber::Create(
+                            config_.robust_tag_loss_k);
+                        break;
+                    case RobustLossType::Tukey:
+                        estimator = gtsam::noiseModel::mEstimator::Tukey::Create(
+                            config_.robust_tag_loss_k);
+                        break;
+                    case RobustLossType::Cauchy:
+                        estimator = gtsam::noiseModel::mEstimator::Cauchy::Create(
+                            config_.robust_tag_loss_k);
+                        break;
+                }
+                pixel_noise = gtsam::noiseModel::Robust::Create(estimator, pixel_noise);
+            }
+
+            if (!is_tag_visible(tag, tag_pose_world, landmark_opt->size)) {
+                continue;
+            }
+
+            // Add projection factor
+            pending_graph_.add(TagProjectionFactor(
+                X(current_pose_idx_),
+                tag_pose_world,
+                landmark_opt->size,
+                intrinsics,
+                extrinsics,
+                tag.turret_yaw_rad,
+                tag.corners,
+                pixel_noise
+            ));
+
     }
     pending_tags_.clear();
 
@@ -348,6 +498,24 @@ PoseEstimate PoseEstimator::update() {
     last_solved_pose_ = current_pose_;
     pending_odom_delta_ = gtsam::Pose2();
     pending_odom_steps_ = 0;
+    if (config_.enable_post_process) {
+        if (post_unstable_) {
+            if (settle_updates_remaining_ > 0) {
+                settle_updates_remaining_--;
+            }
+        }
+        if (post_unstable_ &&
+            max_tag_timestamp >= unstable_until_timestamp_ &&
+            settle_updates_remaining_ <= 0) {
+            post_unstable_ = false;
+            last_stable_pose_ = current_pose_;
+            odom_since_stable_ = gtsam::Pose2();
+        }
+        if (!post_unstable_) {
+            last_stable_pose_ = current_pose_;
+            odom_since_stable_ = gtsam::Pose2();
+        }
+    }
 
     PoseEstimate result;
     result.x = current_pose_.x();
@@ -385,9 +553,13 @@ void PoseEstimator::logTimeSeriesMetrics(int64_t step,
                                          const PoseEstimate& true_pose,
                                          const PoseEstimate& odom_pose,
                                          const PoseEstimate& ekf_pose,
+                                         const PoseEstimate& post_estimate,
+                                         const PoseEstimate& post_ekf,
                                          double position_error,
                                          double odom_error,
-                                         double ekf_error) {
+                                         double ekf_error,
+                                         double post_position_error,
+                                         double post_ekf_error) {
     std::lock_guard<std::mutex> lock(mutex_);
 
 #if DECODE_ENABLE_RERUN
@@ -397,9 +569,13 @@ void PoseEstimator::logTimeSeriesMetrics(int64_t step,
                                           true_pose,
                                           odom_pose,
                                           ekf_pose,
+                                          post_estimate,
+                                          post_ekf,
                                           position_error,
                                           odom_error,
-                                          ekf_error);
+                                          ekf_error,
+                                          post_position_error,
+                                          post_ekf_error);
     }
 #else
     (void)step;
@@ -407,9 +583,13 @@ void PoseEstimator::logTimeSeriesMetrics(int64_t step,
     (void)true_pose;
     (void)odom_pose;
     (void)ekf_pose;
+    (void)post_estimate;
+    (void)post_ekf;
     (void)position_error;
     (void)odom_error;
     (void)ekf_error;
+    (void)post_position_error;
+    (void)post_ekf_error;
 #endif
 }
 
@@ -423,6 +603,23 @@ PoseEstimate PoseEstimator::getCurrentEstimate() const {
     result.timestamp = current_timestamp_;
     result.has_covariance = false;
 
+    return result;
+}
+
+PoseEstimate PoseEstimator::getPostProcessedEstimate() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    gtsam::Pose2 pose = current_pose_;
+    if (config_.enable_post_process && post_unstable_) {
+        pose = last_stable_pose_.compose(odom_since_stable_);
+    }
+
+    PoseEstimate result;
+    result.x = pose.x();
+    result.y = pose.y();
+    result.theta = pose.theta();
+    result.timestamp = current_timestamp_;
+    result.has_covariance = false;
     return result;
 }
 

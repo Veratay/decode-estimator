@@ -28,9 +28,12 @@ Options:
                         Options: armeabi-v7a, arm64-v8a, x86, x86_64
   --android-api LEVEL   Android API level (default: 21)
   --android-ndk PATH    Path to Android NDK (default: $ANDROID_NDK_HOME)
+  --cortex-a53          Enable optimizations for Cortex-A53 (implies --android)
   -h, --help            Show this help
 EOF
 }
+
+optimize_a53="OFF"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -71,6 +74,13 @@ while [[ $# -gt 0 ]]; do
         --android-ndk)
             android_ndk="$2"
             shift
+            ;;
+        --cortex-a53)
+            optimize_a53="ON"
+            build_android="ON"
+            if [[ "$build_dir_set" == "OFF" ]]; then
+                build_dir="build-android"
+            fi
             ;;
         -h|--help)
             usage
@@ -121,6 +131,9 @@ if [[ "$build_android" == "ON" ]]; then
     echo "  ABI: $android_abi"
     echo "  API Level: $android_api_level"
     echo "  Toolchain: $toolchain_file"
+    if [[ "$optimize_a53" == "ON" ]]; then
+        echo "  Optimizations: Cortex-A53 (NEON enabled)"
+    fi
     echo ""
 
     android_cmake_args=(
@@ -130,6 +143,14 @@ if [[ "$build_android" == "ON" ]]; then
         -DANDROID_STL=c++_shared
         -DDECODE_BUILD_FOR_ANDROID=ON
     )
+
+    if [[ "$optimize_a53" == "ON" ]]; then
+        android_cmake_args+=(
+            -DANDROID_ARM_NEON=ON
+            -DCMAKE_CXX_FLAGS="-mcpu=cortex-a53 -O3"
+            -DCMAKE_C_FLAGS="-mcpu=cortex-a53 -O3"
+        )
+    fi
 
     # Disable tests for Android builds
     build_tests="OFF"

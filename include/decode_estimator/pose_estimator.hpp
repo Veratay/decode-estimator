@@ -18,6 +18,12 @@
 
 namespace decode {
 
+enum class RobustLossType {
+    Huber,
+    Tukey,
+    Cauchy
+};
+
 /// Configuration for the pose estimator
 struct EstimatorConfig {
     // iSAM2 parameters
@@ -38,11 +44,32 @@ struct EstimatorConfig {
     /// Default pixel uncertainty (pixels)
     double default_pixel_sigma = 1.0;
 
+    /// Robust loss for tag measurements
+    bool enable_robust_tag_loss = false;
+    RobustLossType robust_tag_loss = RobustLossType::Huber;
+    double robust_tag_loss_k = 1.5;
+
+    /// Tag gating (TagSLAM-inspired)
+    bool enable_tag_gating = true;
+    double min_tag_area_px = 50.0;
+    double max_tag_view_angle_deg = 60.0;
+
+    /// Post-process estimates after vision gap resets
+    bool enable_post_process = true;
+    double post_process_vision_gap_s = 0.4;
+    double post_process_settle_s = 0.5;
+    int post_process_settle_updates = 3;
+
     /// Camera Intrinsics
     double fx = 1000.0;
     double fy = 1000.0;
     double cx = 320.0;
     double cy = 240.0;
+    double k1 = 0.0;
+    double k2 = 0.0;
+    double k3 = 0.0;
+    double p1 = 0.0;
+    double p2 = 0.0;
 
     /// Camera Extrinsics (Robot body to Camera)
     double camera_offset_x = 0.0;
@@ -125,6 +152,9 @@ public:
     /// Get current pose estimate without adding new measurements
     PoseEstimate getCurrentEstimate() const;
 
+    /// Get post-processed pose estimate (vision gap smoothing)
+    PoseEstimate getPostProcessedEstimate() const;
+
     /// Get pose estimate with covariance (more expensive)
     PoseEstimate getCurrentEstimateWithCovariance() const;
 
@@ -159,9 +189,13 @@ public:
                               const PoseEstimate& true_pose,
                               const PoseEstimate& odom_pose,
                               const PoseEstimate& ekf_pose,
+                              const PoseEstimate& post_estimate,
+                              const PoseEstimate& post_ekf,
                               double position_error,
                               double odom_error,
-                              double ekf_error);
+                              double ekf_error,
+                              double post_position_error,
+                              double post_ekf_error);
 
 private:
     /// Create noise models from config
@@ -191,6 +225,8 @@ private:
     gtsam::NonlinearFactorGraph pending_graph_;
     gtsam::Values pending_values_;
 
+    double last_turret_yaw_rad_ = 0.0;
+
     // Landmark map
     LandmarkMap landmark_map_;
 
@@ -219,6 +255,15 @@ private:
     double last_solve_ms_ = 0.0;
     double total_solve_ms_ = 0.0;
     size_t solve_count_ = 0;
+
+    // Post-process state for vision resets
+    double last_tag_timestamp_ = -1.0;
+    bool post_unstable_ = false;
+    double unstable_until_timestamp_ = -1.0;
+    int settle_updates_remaining_ = 0;
+    gtsam::Pose2 last_stable_pose_;
+    gtsam::Pose2 odom_since_stable_;
+
 };
 
 } // namespace decode

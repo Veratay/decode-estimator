@@ -1,6 +1,5 @@
 #include "decode_estimator/tag_projection_factor.hpp"
 
-#include <gtsam/geometry/PinholeCamera.h>
 #include <gtsam/base/Matrix.h>
 #include <gtsam/base/numericalDerivative.h>
 
@@ -16,7 +15,7 @@ TagProjectionFactor::TagProjectionFactor(
     gtsam::Key poseKey,
     const gtsam::Pose3& tag_pose_world,
     double tag_size,
-    const gtsam::Cal3_S2& camera_intrinsics,
+    const CameraModel& camera_intrinsics,
     const gtsam::Pose3& camera_extrinsics_body,
     double turret_yaw,
     const std::vector<std::pair<double, double>>& measured_corners,
@@ -76,7 +75,15 @@ bool TagProjectionFactor::equals(const gtsam::NonlinearFactor& expected, double 
     return e != nullptr && Base::equals(*e, tol) &&
            tag_pose_world_.equals(e->tag_pose_world_, tol) &&
            std::abs(tag_size_ - e->tag_size_) < tol &&
-           camera_intrinsics_.equals(e->camera_intrinsics_, tol);
+           std::abs(camera_intrinsics_.fx - e->camera_intrinsics_.fx) < tol &&
+           std::abs(camera_intrinsics_.fy - e->camera_intrinsics_.fy) < tol &&
+           std::abs(camera_intrinsics_.cx - e->camera_intrinsics_.cx) < tol &&
+           std::abs(camera_intrinsics_.cy - e->camera_intrinsics_.cy) < tol &&
+           std::abs(camera_intrinsics_.k1 - e->camera_intrinsics_.k1) < tol &&
+           std::abs(camera_intrinsics_.k2 - e->camera_intrinsics_.k2) < tol &&
+           std::abs(camera_intrinsics_.k3 - e->camera_intrinsics_.k3) < tol &&
+           std::abs(camera_intrinsics_.p1 - e->camera_intrinsics_.p1) < tol &&
+           std::abs(camera_intrinsics_.p2 - e->camera_intrinsics_.p2) < tol;
 }
 
 gtsam::Vector TagProjectionFactor::evaluateError(const gtsam::Pose2& pose,
@@ -93,22 +100,19 @@ gtsam::Vector TagProjectionFactor::evaluateError(const gtsam::Pose2& pose,
         gtsam::Pose3 fixed_offset = turret_pose.compose(camera_extrinsics_body_);
         gtsam::Pose3 camera_pose = robot_pose.compose(fixed_offset);
 
-        // Camera object
-        gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, camera_intrinsics_);
-
         // 3. Project points and accumulate error
         gtsam::Vector error(8);
         error.setZero();
 
         for (size_t i = 0; i < 4; ++i) {
             gtsam::Point3 world_point = tag_pose_world_.transformFrom(tag_corners_local_[i]);
-            auto projected = camera.projectSafe(world_point);
-            if (!projected.second) {
+            gtsam::Point2 projected;
+            if (!projectPoint(camera_pose, camera_intrinsics_, world_point, &projected)) {
                 return gtsam::Vector::Constant(8, kCheiralityError);
             }
 
-            error(2 * i) = projected.first.x() - measured_(2 * i);
-            error(2 * i + 1) = projected.first.y() - measured_(2 * i + 1);
+            error(2 * i) = projected.x() - measured_(2 * i);
+            error(2 * i + 1) = projected.y() - measured_(2 * i + 1);
         }
 
         return error;

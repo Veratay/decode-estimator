@@ -101,16 +101,38 @@ The JNI interface is available through `com.decode.estimator.PoseEstimatorBridge
 PoseEstimatorBridge bridge = new PoseEstimatorBridge();
 long handle = bridge.nativeCreate();
 
-// OR create with custom noise parameters
+// OR create with custom config
 long handle = bridge.nativeCreateWithConfig(
     0.05,  // prior_sigma_xy (m)
     0.02,  // prior_sigma_theta (rad)
     0.02,  // odom_sigma_xy (m)
     0.01,  // odom_sigma_theta (rad)
-    0.05,  // default_bearing_sigma (rad, ~3 degrees)
-    0.2,   // default_distance_sigma (m)
+    1.0,   // default_pixel_sigma (px)
+    0.01,  // relinearize_threshold
+    1,     // relinearize_skip
+    true,  // enable_partial_relinearization
+    true,  // compact_odometry
+    false, // enable_robust_tag_loss
+    0,     // robust_tag_loss (0=Huber, 1=Tukey, 2=Cauchy)
+    1.5,   // robust_tag_loss_k
+    true,  // enable_tag_gating
+    50.0,  // min_tag_area_px
+    60.0,  // max_tag_view_angle_deg
+    1000.0,// fx
+    1000.0,// fy
+    320.0, // cx
+    240.0, // cy
+    0.0,   // k1
+    0.0,   // k2
+    0.0,   // k3
+    0.0,   // p1
+    0.0,   // p2
     0.0,   // camera_offset_x (m, turret frame)
-    0.0    // camera_offset_y (m, turret frame)
+    0.0,   // camera_offset_y (m, turret frame)
+    0.5,   // camera_offset_z (m, turret frame)
+    0.0,   // camera_roll (rad)
+    0.0,   // camera_pitch (rad)
+    0.0    // camera_yaw (rad)
 );
 
 // Initialize with landmarks
@@ -123,10 +145,8 @@ bridge.nativeInitialize(handle, tagIds, landmarkX, landmarkY, 0.0, 0.0, 0.0);
 bridge.nativeProcessOdometry(handle, dx, dy, dtheta, timestamp);
 
 // Add bearing measurement
-bridge.nativeAddBearingMeasurement(handle, tagId, bearing, turretYaw, uncertainty, timestamp);
-
-// Add distance measurement (optional)
-bridge.nativeAddDistanceMeasurement(handle, tagId, distance, turretYaw, uncertainty, timestamp);
+double[] corners = {u1, v1, u2, v2, u3, v3, u4, v4};
+bridge.nativeAddTagMeasurement(handle, tagId, corners, pixelSigma, timestamp, turretYawRad);
 
 // Update and get pose
 bridge.nativeUpdate(handle);
@@ -141,13 +161,13 @@ double[] poseWithCov = bridge.nativeGetCurrentEstimateWithCovariance(handle);
 bridge.nativeDestroy(handle);
 ```
 
-**Noise Parameter Guidelines:**
+**Parameter Guidelines:**
 - `prior_sigma_xy`: Initial position uncertainty (typical: 0.05m = 5cm)
 - `prior_sigma_theta`: Initial heading uncertainty (typical: 0.02rad ≈ 1.1°)
 - `odom_sigma_xy`: Odometry position noise per update (typical: 0.02m = 2cm)
 - `odom_sigma_theta`: Odometry heading noise per update (typical: 0.01rad ≈ 0.6°)
-- `default_bearing_sigma`: Bearing measurement uncertainty (typical: 0.05rad ≈ 3°)
-- `default_distance_sigma`: Distance measurement uncertainty (typical: 0.2m = 20cm)
+- `default_pixel_sigma`: Pixel measurement uncertainty (typical: 1.0px)
+- `robust_tag_loss`: 0=Huber, 1=Tukey, 2=Cauchy
 - `camera_offset_x`, `camera_offset_y`: Camera offset in turret frame (meters)
 
 Tune these based on your sensor characteristics and testing.

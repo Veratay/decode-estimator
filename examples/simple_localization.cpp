@@ -8,10 +8,9 @@
  */
 
 #include <decode_estimator/pose_estimator.hpp>
+#include <decode_estimator/camera_model.hpp>
 
 #include <gtsam/geometry/Pose3.h>
-#include <gtsam/geometry/Cal3_S2.h>
-#include <gtsam/geometry/PinholeCamera.h>
 
 #include <chrono>
 #include <cmath>
@@ -104,8 +103,16 @@ void simulateDetection(double true_x, double true_y, double true_theta,
     gtsam::Pose3 camera_pose = robot_pose.compose(extrinsics);
     
     // Camera Model
-    gtsam::Cal3_S2 intrinsics(config.fx, config.fy, 0, config.cx, config.cy);
-    gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
+    decode::CameraModel intrinsics;
+    intrinsics.fx = config.fx;
+    intrinsics.fy = config.fy;
+    intrinsics.cx = config.cx;
+    intrinsics.cy = config.cy;
+    intrinsics.k1 = config.k1;
+    intrinsics.k2 = config.k2;
+    intrinsics.k3 = config.k3;
+    intrinsics.p1 = config.p1;
+    intrinsics.p2 = config.p2;
     
     // Tag Pose3
     gtsam::Pose3 tag_pose(gtsam::Rot3::Ypr(tag.yaw, tag.pitch, tag.roll),
@@ -126,23 +133,22 @@ void simulateDetection(double true_x, double true_y, double true_theta,
     for (const auto& pt_local : corners_local) {
         gtsam::Point3 pt_world = tag_pose.transformFrom(pt_local);
         
-        try {
-            gtsam::Point2 px = camera.project(pt_world);
-            
-            // Add noise
-            double u = px.x() + pixel_noise(gen);
-            double v = px.y() + pixel_noise(gen);
-            
-            // Check bounds (simple check)
-            if (u < 0 || u > 2*config.cx || v < 0 || v > 2*config.cy) {
-                visible = false;
-                break;
-            }
-            meas.corners.emplace_back(u, v);
-        } catch (...) {
+        gtsam::Point2 px;
+        if (!decode::projectPoint(camera_pose, intrinsics, pt_world, &px)) {
             visible = false;
             break;
         }
+
+        // Add noise
+        double u = px.x() + pixel_noise(gen);
+        double v = px.y() + pixel_noise(gen);
+
+        // Check bounds (simple check)
+        if (u < 0 || u > 2*config.cx || v < 0 || v > 2*config.cy) {
+            visible = false;
+            break;
+        }
+        meas.corners.emplace_back(u, v);
     }
     
     if (visible && meas.corners.size() == 4) {

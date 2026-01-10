@@ -4,11 +4,10 @@
  */
 
 #include <decode_estimator/pose_estimator.hpp>
+#include <decode_estimator/camera_model.hpp>
 
 #include <gtest/gtest.h>
 #include <gtsam/geometry/Pose3.h>
-#include <gtsam/geometry/Cal3_S2.h>
-#include <gtsam/geometry/PinholeCamera.h>
 
 #include <cmath>
 #include <vector>
@@ -61,8 +60,16 @@ protected:
                                 gtsam::Point3(config.camera_offset_x, config.camera_offset_y, config.camera_offset_z));
         
         gtsam::Pose3 camera_pose = robot_pose.compose(extrinsics);
-        gtsam::Cal3_S2 intrinsics(config.fx, config.fy, 0, config.cx, config.cy);
-        gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
+        decode::CameraModel intrinsics;
+        intrinsics.fx = config.fx;
+        intrinsics.fy = config.fy;
+        intrinsics.cx = config.cx;
+        intrinsics.cy = config.cy;
+        intrinsics.k1 = config.k1;
+        intrinsics.k2 = config.k2;
+        intrinsics.k3 = config.k3;
+        intrinsics.p1 = config.p1;
+        intrinsics.p2 = config.p2;
 
         // Tag Pose
         gtsam::Pose3 tag_pose(gtsam::Rot3::Ypr(tag.yaw, tag.pitch, tag.roll),
@@ -75,11 +82,9 @@ protected:
 
         for(auto& pt : corners_local) {
             gtsam::Point3 pt_world = tag_pose.transformFrom(pt);
-            try {
-                gtsam::Point2 uv = camera.project(pt_world);
+            gtsam::Point2 uv;
+            if (decode::projectPoint(camera_pose, intrinsics, pt_world, &uv)) {
                 meas.corners.emplace_back(uv.x(), uv.y());
-            } catch(...) {
-                // Cheirality
             }
         }
         return meas;

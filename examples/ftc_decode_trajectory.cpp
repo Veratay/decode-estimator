@@ -10,8 +10,7 @@
 #include <decode_estimator/pose_estimator.hpp>
 
 #include <gtsam/geometry/Pose3.h>
-#include <gtsam/geometry/Cal3_S2.h>
-#include <gtsam/geometry/PinholeCamera.h>
+#include <decode_estimator/camera_model.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -28,9 +27,9 @@ constexpr double TURN_GAIN = 2.0;      // Heading correction gain
 constexpr int NUM_ITERATIONS = 20000;
 
 // Noise parameters for simulation
-constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
-constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
-constexpr double PIXEL_NOISE = 1.0;         // pixels
+constexpr double ODOM_NOISE_XY = 0.0004;     // meters per step
+constexpr double ODOM_NOISE_THETA = 0.0002;  // radians per step
+constexpr double PIXEL_NOISE = 2.0;         // pixels
 constexpr double TURRET_YAW_AMPLITUDE = 0.8; // radians
 constexpr double TURRET_YAW_RATE = 0.6;      // rad/s
 
@@ -95,8 +94,16 @@ void simulateDetection(double true_x, double true_y, double true_theta,
     gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
     
     // Camera Model
-    gtsam::Cal3_S2 intrinsics(config.fx, config.fy, 0, config.cx, config.cy);
-    gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
+    decode::CameraModel intrinsics;
+    intrinsics.fx = config.fx;
+    intrinsics.fy = config.fy;
+    intrinsics.cx = config.cx;
+    intrinsics.cy = config.cy;
+    intrinsics.k1 = config.k1;
+    intrinsics.k2 = config.k2;
+    intrinsics.k3 = config.k3;
+    intrinsics.p1 = config.p1;
+    intrinsics.p2 = config.p2;
     
     // Tag Pose3
     gtsam::Pose3 tag_pose(gtsam::Rot3::Ypr(tag.yaw, tag.pitch, tag.roll),
@@ -117,23 +124,22 @@ void simulateDetection(double true_x, double true_y, double true_theta,
     for (const auto& pt_local : corners_local) {
         gtsam::Point3 pt_world = tag_pose.transformFrom(pt_local);
         
-        try {
-            gtsam::Point2 px = camera.project(pt_world);
-            
-            // Add noise
-            double u = px.x() + pixel_noise(gen);
-            double v = px.y() + pixel_noise(gen);
-            
-            // Check bounds (simple check)
-            if (u < 0 || u > 2*config.cx || v < 0 || v > 2*config.cy) {
-                visible = false;
-                break;
-            }
-            meas.corners.emplace_back(u, v);
-        } catch (...) {
+        gtsam::Point2 px;
+        if (!decode::projectPoint(camera_pose, intrinsics, pt_world, &px)) {
             visible = false;
             break;
         }
+
+        // Add noise
+        double u = px.x() + pixel_noise(gen);
+        double v = px.y() + pixel_noise(gen);
+
+        // Check bounds (simple check)
+        if (u < 0 || u > 2*config.cx || v < 0 || v > 2*config.cy) {
+            visible = false;
+            break;
+        }
+        meas.corners.emplace_back(u, v);
     }
     
     if (visible && meas.corners.size() == 4) {
@@ -189,6 +195,11 @@ int main() {
     ekf_config.fy = config.fy;
     ekf_config.cx = config.cx;
     ekf_config.cy = config.cy;
+    ekf_config.k1 = config.k1;
+    ekf_config.k2 = config.k2;
+    ekf_config.k3 = config.k3;
+    ekf_config.p1 = config.p1;
+    ekf_config.p2 = config.p2;
     ekf_config.camera_offset_x = config.camera_offset_x;
     ekf_config.camera_offset_y = config.camera_offset_y;
     ekf_config.camera_offset_z = config.camera_offset_z;
@@ -306,6 +317,8 @@ int main() {
 
         decode::PoseEstimate est = estimator.update();
         decode::PoseEstimate ekf_est = ekf.getCurrentEstimate();
+        decode::PoseEstimate post_est = estimator.getPostProcessedEstimate();
+        decode::PoseEstimate post_ekf = ekf.getPostProcessedEstimate();
 
         decode::PoseEstimate true_pose;
         true_pose.x = true_x;
@@ -327,15 +340,23 @@ int main() {
                                       (odom_y - true_y) * (odom_y - true_y));
         double ekf_error = std::sqrt((ekf_est.x - true_x) * (ekf_est.x - true_x) +
                                      (ekf_est.y - true_y) * (ekf_est.y - true_y));
+        double post_error = std::sqrt((post_est.x - true_x) * (post_est.x - true_x) +
+                                      (post_est.y - true_y) * (post_est.y - true_y));
+        double post_ekf_error = std::sqrt((post_ekf.x - true_x) * (post_ekf.x - true_x) +
+                                          (post_ekf.y - true_y) * (post_ekf.y - true_y));
 
         estimator.logTimeSeriesMetrics(i,
                                        est,
                                        true_pose,
                                        odom_pose,
                                        ekf_est,
+                                       post_est,
+                                       post_ekf,
                                        position_error,
                                        odom_error,
-                                       ekf_error);
+                                       ekf_error,
+                                       post_error,
+                                       post_ekf_error);
 
         if (i % 100 == 0 || i == NUM_ITERATIONS - 1) {
             std::cout << std::setw(6) << i << " | "
