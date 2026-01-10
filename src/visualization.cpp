@@ -21,7 +21,7 @@ void Visualizer::logLandmarks(const LandmarkMap &landmarks) {
 
   for (const auto &[id, point] : landmarks.getAllLandmarks()) {
     positions.push_back(
-        {static_cast<float>(point.x()), static_cast<float>(point.y()), 0.0f});
+        {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)});
     labels.push_back("Tag " + std::to_string(id));
   }
 
@@ -124,7 +124,7 @@ void Visualizer::logLandmarkRays(
   for (const auto &[id, point] : landmarks.getAllLandmarks()) {
     std::vector<rerun::Position3D> line = {
         {static_cast<float>(pose.x), static_cast<float>(pose.y), 0.0f},
-        {static_cast<float>(point.x()), static_cast<float>(point.y()), 0.0f}};
+        {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z)}};
 
     rec_.log("world/measurements/bearing_ray_" + std::to_string(id),
              rerun::LineStrips3D({line})

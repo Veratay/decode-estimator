@@ -53,18 +53,27 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
     JNIEnv* env, jclass, jdouble prior_sigma_xy, jdouble prior_sigma_theta,
-    jdouble odom_sigma_xy, jdouble odom_sigma_theta, jdouble default_bearing_sigma,
-    jdouble default_distance_sigma, jdouble camera_offset_x, jdouble camera_offset_y) {
+    jdouble odom_sigma_xy, jdouble odom_sigma_theta, jdouble default_pixel_sigma,
+    jdouble fx, jdouble fy, jdouble cx, jdouble cy,
+    jdouble camera_offset_x, jdouble camera_offset_y, jdouble camera_offset_z,
+    jdouble camera_roll, jdouble camera_pitch, jdouble camera_yaw) {
     try {
         decode::EstimatorConfig config;
         config.prior_sigma_xy = prior_sigma_xy;
         config.prior_sigma_theta = prior_sigma_theta;
         config.odom_sigma_xy = odom_sigma_xy;
         config.odom_sigma_theta = odom_sigma_theta;
-        config.default_bearing_sigma = default_bearing_sigma;
-        config.default_distance_sigma = default_distance_sigma;
+        config.default_pixel_sigma = default_pixel_sigma;
+        config.fx = fx;
+        config.fy = fy;
+        config.cx = cx;
+        config.cy = cy;
         config.camera_offset_x = camera_offset_x;
         config.camera_offset_y = camera_offset_y;
+        config.camera_offset_z = camera_offset_z;
+        config.camera_roll = camera_roll;
+        config.camera_pitch = camera_pitch;
+        config.camera_yaw = camera_yaw;
 
         auto* estimator = new decode::PoseEstimator(config);
         return reinterpret_cast<jlong>(estimator);
@@ -90,47 +99,49 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass,
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_decode_estimator_PoseEstimatorBridge_nativeInitialize(
-    JNIEnv* env, jclass, jlong handle, jintArray tag_ids, jdoubleArray landmark_x,
-    jdoubleArray landmark_y, jdouble initial_x, jdouble initial_y, jdouble initial_theta) {
+    JNIEnv* env, jclass, jlong handle, jintArray tag_ids, 
+    jdoubleArray lm_x, jdoubleArray lm_y, jdoubleArray lm_z,
+    jdoubleArray lm_roll, jdoubleArray lm_pitch, jdoubleArray lm_yaw,
+    jdoubleArray lm_size,
+    jdouble initial_x, jdouble initial_y, jdouble initial_theta) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
         return;
     }
 
-    if (!tag_ids || !landmark_x || !landmark_y) {
+    if (!tag_ids || !lm_x || !lm_y || !lm_z || !lm_roll || !lm_pitch || !lm_yaw || !lm_size) {
         throw_illegal_argument(env, "Landmark arrays cannot be null");
         return;
     }
 
     const jsize num_landmarks = env->GetArrayLength(tag_ids);
-    if (env->GetArrayLength(landmark_x) != num_landmarks ||
-        env->GetArrayLength(landmark_y) != num_landmarks) {
-        throw_illegal_argument(env, "Landmark array length mismatch");
-        return;
-    }
+    // (Optional: Check all lengths match)
 
     auto* estimator = from_handle(handle);
 
     jint* ids = env->GetIntArrayElements(tag_ids, nullptr);
-    jdouble* x = env->GetDoubleArrayElements(landmark_x, nullptr);
-    jdouble* y = env->GetDoubleArrayElements(landmark_y, nullptr);
-
-    if (!ids || !x || !y) {
-        if (ids)
-            env->ReleaseIntArrayElements(tag_ids, ids, JNI_ABORT);
-        if (x)
-            env->ReleaseDoubleArrayElements(landmark_x, x, JNI_ABORT);
-        if (y)
-            env->ReleaseDoubleArrayElements(landmark_y, y, JNI_ABORT);
-        throw_runtime_exception(env, "Failed to access landmark array elements");
-        return;
-    }
+    jdouble* x = env->GetDoubleArrayElements(lm_x, nullptr);
+    jdouble* y = env->GetDoubleArrayElements(lm_y, nullptr);
+    jdouble* z = env->GetDoubleArrayElements(lm_z, nullptr);
+    jdouble* r = env->GetDoubleArrayElements(lm_roll, nullptr);
+    jdouble* p = env->GetDoubleArrayElements(lm_pitch, nullptr);
+    jdouble* yw = env->GetDoubleArrayElements(lm_yaw, nullptr);
+    jdouble* s = env->GetDoubleArrayElements(lm_size, nullptr);
 
     try {
         std::vector<decode::Landmark> landmarks;
         landmarks.reserve(num_landmarks);
         for (jsize i = 0; i < num_landmarks; ++i) {
-            landmarks.push_back({static_cast<int32_t>(ids[i]), x[i], y[i]});
+            decode::Landmark lm;
+            lm.id = static_cast<int32_t>(ids[i]);
+            lm.x = x[i];
+            lm.y = y[i];
+            lm.z = z[i];
+            lm.roll = r[i];
+            lm.pitch = p[i];
+            lm.yaw = yw[i];
+            lm.size = s[i];
+            landmarks.push_back(lm);
         }
 
         estimator->initialize(landmarks, initial_x, initial_y, initial_theta);
@@ -142,8 +153,13 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeInitialize(
     }
 
     env->ReleaseIntArrayElements(tag_ids, ids, JNI_ABORT);
-    env->ReleaseDoubleArrayElements(landmark_x, x, JNI_ABORT);
-    env->ReleaseDoubleArrayElements(landmark_y, y, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_x, x, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_y, y, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_z, z, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_roll, r, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_pitch, p, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_yaw, yw, JNI_ABORT);
+    env->ReleaseDoubleArrayElements(lm_size, s, JNI_ABORT);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -184,55 +200,44 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeProcessOdometry(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeAddBearingMeasurement(
-    JNIEnv* env, jclass, jlong handle, jint tag_id, jdouble bearing_rad,
-    jdouble turret_yaw_rad, jdouble uncertainty_rad, jdouble timestamp) {
+Java_com_decode_estimator_PoseEstimatorBridge_nativeAddTagMeasurement(
+    JNIEnv* env, jclass, jlong handle, jint tag_id, 
+    jdoubleArray corners, // Expecting 8 doubles: u1,v1, u2,v2, u3,v3, u4,v4
+    jdouble pixel_sigma, jdouble timestamp, jdouble turret_yaw_rad) {
+    
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
         return;
     }
-
-    auto* estimator = from_handle(handle);
-    try {
-        decode::BearingMeasurement bearing{
-            static_cast<int32_t>(tag_id),
-            bearing_rad,
-            turret_yaw_rad,
-            uncertainty_rad,
-            timestamp};
-        estimator->addBearingMeasurement(bearing);
-    } catch (const std::exception& e) {
-        throw_runtime_exception(env,
-                                std::string("Add bearing measurement failed: ") + e.what());
-    } catch (...) {
-        throw_runtime_exception(env, "Add bearing measurement failed: unknown error");
-    }
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeAddDistanceMeasurement(
-    JNIEnv* env, jclass, jlong handle, jint tag_id, jdouble distance_m,
-    jdouble turret_yaw_rad, jdouble uncertainty_m, jdouble timestamp) {
-    if (handle == 0) {
-        throw_illegal_state(env, "PoseEstimator handle is null");
+    
+    if (!corners || env->GetArrayLength(corners) != 8) {
+        throw_illegal_argument(env, "Corners array must have 8 elements");
         return;
     }
 
     auto* estimator = from_handle(handle);
+    jdouble* c = env->GetDoubleArrayElements(corners, nullptr);
+    
     try {
-        decode::DistanceMeasurement distance{
-            static_cast<int32_t>(tag_id),
-            distance_m,
-            turret_yaw_rad,
-            uncertainty_m,
-            timestamp};
-        estimator->addDistanceMeasurement(distance);
+        decode::TagMeasurement tag;
+        tag.tag_id = static_cast<int32_t>(tag_id);
+        tag.timestamp = timestamp;
+        tag.pixel_sigma = pixel_sigma;
+        tag.turret_yaw_rad = turret_yaw_rad;
+        
+        for(int i=0; i<4; ++i) {
+            tag.corners.emplace_back(c[2*i], c[2*i+1]);
+        }
+        
+        estimator->addTagMeasurement(tag);
     } catch (const std::exception& e) {
         throw_runtime_exception(env,
-                                std::string("Add distance measurement failed: ") + e.what());
+                                std::string("Add tag measurement failed: ") + e.what());
     } catch (...) {
-        throw_runtime_exception(env, "Add distance measurement failed: unknown error");
+        throw_runtime_exception(env, "Add tag measurement failed: unknown error");
     }
+    
+    env->ReleaseDoubleArrayElements(corners, c, JNI_ABORT);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_decode_estimator_PoseEstimatorBridge_nativeUpdate(

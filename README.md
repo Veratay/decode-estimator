@@ -15,9 +15,6 @@ A factor graph-based 2D robot pose estimator using GTSAM and iSAM2. Fuses odomet
 ### Required
 - CMake 3.16+
 - C++17 compiler
-- Boost (serialization, system, filesystem, thread, program_options, date_time, timer, chrono, regex)
-  - GTSAM and Eigen are built locally as static libs (no system installs required).
-  - GTSAM is built without TBB.
 
 ### Optional
 - Rerun SDK (for visualization)
@@ -28,8 +25,8 @@ A factor graph-based 2D robot pose estimator using GTSAM and iSAM2. Fuses odomet
 ### Ubuntu/Debian
 
 ```bash
-# Build essentials + Boost
-sudo apt-get install build-essential cmake libboost-all-dev
+# Build essentials 
+sudo apt-get install build-essential cmake
 
 # Google Test (optional, for tests)
 sudo apt-get install libgtest-dev
@@ -68,7 +65,7 @@ CM4_TOOLCHAIN_PREFIX=aarch64-linux-gnu \
 
 ### Building for Android
 
-The project includes a JNI interface for use on Android. All dependencies (Eigen, GTSAM, Boost) are automatically cross-compiled for Android.
+The project includes a JNI interface for use on Android. All dependencies (Eigen, GTSAM) are automatically cross-compiled for Android.
 
 **Prerequisites:**
 - Android NDK (r21 or later recommended)

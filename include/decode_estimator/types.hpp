@@ -14,22 +14,17 @@ struct OdometryMeasurement {
     double timestamp; ///< Timestamp (seconds)
 };
 
-/// AprilTag bearing measurement in camera frame
-struct BearingMeasurement {
-    int32_t tag_id;          ///< AprilTag ID
-    double bearing_rad;      ///< Bearing angle in camera frame (radians), 0 = forward
-    double turret_yaw_rad = 0.0; ///< Turret yaw relative to robot (radians)
-    double uncertainty_rad;  ///< 1-sigma uncertainty (radians)
-    double timestamp;        ///< Timestamp (seconds)
-};
-
-/// AprilTag distance measurement in camera frame
-struct DistanceMeasurement {
-    int32_t tag_id;         ///< AprilTag ID
-    double distance_m;      ///< Range to tag (meters)
-    double turret_yaw_rad = 0.0; ///< Turret yaw relative to robot (radians)
-    double uncertainty_m;   ///< 1-sigma uncertainty (meters)
-    double timestamp;       ///< Timestamp (seconds)
+/// AprilTag detection measurement (pixel coordinates)
+struct TagMeasurement {
+    int32_t tag_id; ///< AprilTag ID
+    
+    /// Detected corners in pixel coordinates (u, v)
+    /// Order matters: usually Top-Left, Top-Right, Bottom-Right, Bottom-Left
+    std::vector<std::pair<double, double>> corners;
+    
+    double pixel_sigma; ///< Uncertainty in pixel coordinates (pixels)
+    double timestamp;   ///< Timestamp (seconds)
+    double turret_yaw_rad = 0.0; ///< Known turret yaw at time of measurement
 };
 
 /// Robot pose estimate
@@ -44,11 +39,20 @@ struct PoseEstimate {
     bool has_covariance; ///< Whether covariance is valid
 };
 
-/// AprilTag landmark position
+/// AprilTag landmark definition
 struct Landmark {
     int32_t id; ///< AprilTag ID
-    double x;   ///< X position in field coordinates (meters)
-    double y;   ///< Y position in field coordinates (meters)
+    
+    // Pose of the tag center in World Frame
+    double x;     ///< X position (meters)
+    double y;     ///< Y position (meters)
+    double z;     ///< Z position (meters)
+    
+    double roll;  ///< Rotation around X (radians)
+    double pitch; ///< Rotation around Y (radians)
+    double yaw;   ///< Rotation around Z (radians)
+    
+    double size;  ///< Tag side length (meters)
 };
 
 } // namespace decode

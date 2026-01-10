@@ -1,13 +1,17 @@
 /**
  * @file simple_localization.cpp
- * @brief Example demonstrating the GTSAM iSAM2 pose estimator
+ * @brief Example demonstrating the TagSLAM-inspired Pose Estimator
  *
  * This example simulates a robot moving in a square pattern while detecting
- * AprilTags at known positions. It demonstrates how odometry drift is
- * corrected by fusing bearing measurements to known landmarks.
+ * AprilTags. It generates synthetic pixel corner measurements and feeds them
+ * to the estimator to correct odometry drift.
  */
 
 #include <decode_estimator/pose_estimator.hpp>
+
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/Cal3_S2.h>
+#include <gtsam/geometry/PinholeCamera.h>
 
 #include <chrono>
 #include <cmath>
@@ -25,11 +29,9 @@ constexpr int NUM_ITERATIONS = 1000;
 // Noise parameters for simulation
 constexpr double ODOM_NOISE_XY = 0.005;     // meters per step
 constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
-constexpr double BEARING_NOISE = 0.03;      // radians (~2 degrees)
-constexpr double DISTANCE_NOISE = 0.15;     // meters (less confident than bearing)
+constexpr double PIXEL_NOISE = 1.0;         // pixels
 
 // Detection parameters
-constexpr double DETECTION_RANGE = 5.0;     // meters
 constexpr int DETECTION_INTERVAL = 10;      // Check for tags every N steps
 
 /// Wrap angle to [-pi, pi]
@@ -39,90 +41,182 @@ double wrapAngle(double angle) {
     return angle;
 }
 
-/// Compute bearing from robot pose to landmark (in robot frame)
-double computeBearing(double robot_x, double robot_y, double robot_theta,
-                      double landmark_x, double landmark_y) {
-    double dx = landmark_x - robot_x;
-    double dy = landmark_y - robot_y;
-    double global_bearing = std::atan2(dy, dx);
-    return wrapAngle(global_bearing - robot_theta);
+// Helper to create a tag facing a specific direction
+decode::Landmark createTag(int32_t id, double x, double y, double z, double facing_yaw) {
+    decode::Landmark lm;
+    lm.id = id;
+    lm.x = x;
+    lm.y = y;
+    lm.z = z;
+    lm.size = 0.2; // 20cm tag
+    
+    // Standard tag frame: Z out, X right, Y down
+    // We want Z to point in 'facing_yaw' direction
+    // If facing_yaw = 0 (East), Z=(1,0,0).
+    // If we use Ypr(yaw, -90, 0)?
+    // Rot3::Ypr(y,p,r) -> Rz(y)*Ry(p)*Rx(r)
+    // Local Z (0,0,1) -> Global vector
+    // To point Z horizontally, pitch = -pi/2?
+    // Let's assume tags are vertical.
+    
+    // Explicit rotation construction:
+    // Z axis (normal): (cos(yaw), sin(yaw), 0)
+    // Y axis (down): (0, 0, -1)
+    // X axis (right): Y x Z = (-sin, cos, 0)
+    
+    gtsam::Rot3 R(
+        -std::sin(facing_yaw), 0, std::cos(facing_yaw), // Col 1 (X)
+         std::cos(facing_yaw), 0, std::sin(facing_yaw), // Col 2 (Y) ?? Wait X cross Y = Z
+         0,                   -1, 0                     // Col 3 (Z) - No wait
+    );
+    // Let's stick to YPR and guess:
+    // Yaw=facing, Pitch=-90deg (to bring Z down to horizon), Roll=-90 (to align X/Y)?
+    
+    // Simpler: Just set YPR such that Z points out.
+    // If Yaw=0, Pitch=0, Roll=0: Z is Up.
+    // Pitch -90 deg: Z becomes X. (Rot around Y).
+    // Then X becomes -Z (Down).
+    
+    lm.yaw = facing_yaw;
+    lm.pitch = -M_PI / 2.0; 
+    lm.roll = -M_PI / 2.0; 
+    
+    return lm;
 }
 
-/// Compute distance from robot to landmark
-double computeDistance(double robot_x, double robot_y,
-                       double landmark_x, double landmark_y) {
-    double dx = landmark_x - robot_x;
-    double dy = landmark_y - robot_y;
-    return std::sqrt(dx * dx + dy * dy);
+void simulateDetection(double true_x, double true_y, double true_theta,
+                       const decode::Landmark& tag,
+                       const decode::EstimatorConfig& config,
+                       double time,
+                       decode::PoseEstimator& estimator,
+                       std::mt19937& gen,
+                       std::normal_distribution<>& pixel_noise) {
+    
+    // Robot Pose3
+    gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(true_theta, 0, 0),
+                            gtsam::Point3(true_x, true_y, 0));
+    
+    // Extrinsics (Body -> Camera)
+    gtsam::Pose3 extrinsics(gtsam::Rot3::Ypr(config.camera_yaw, config.camera_pitch, config.camera_roll),
+                            gtsam::Point3(config.camera_offset_x, config.camera_offset_y, config.camera_offset_z));
+    
+    // Camera World Pose
+    gtsam::Pose3 camera_pose = robot_pose.compose(extrinsics);
+    
+    // Camera Model
+    gtsam::Cal3_S2 intrinsics(config.fx, config.fy, 0, config.cx, config.cy);
+    gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
+    
+    // Tag Pose3
+    gtsam::Pose3 tag_pose(gtsam::Rot3::Ypr(tag.yaw, tag.pitch, tag.roll),
+                          gtsam::Point3(tag.x, tag.y, tag.z));
+                          
+    double s = tag.size / 2.0;
+    std::vector<gtsam::Point3> corners_local = {
+        {-s, -s, 0}, {s, -s, 0}, {s, s, 0}, {-s, s, 0}
+    };
+    
+    decode::TagMeasurement meas;
+    meas.tag_id = tag.id;
+    meas.timestamp = time;
+    meas.pixel_sigma = PIXEL_NOISE;
+    meas.turret_yaw_rad = 0.0;
+    
+    bool visible = true;
+    for (const auto& pt_local : corners_local) {
+        gtsam::Point3 pt_world = tag_pose.transformFrom(pt_local);
+        
+        try {
+            gtsam::Point2 px = camera.project(pt_world);
+            
+            // Add noise
+            double u = px.x() + pixel_noise(gen);
+            double v = px.y() + pixel_noise(gen);
+            
+            // Check bounds (simple check)
+            if (u < 0 || u > 2*config.cx || v < 0 || v > 2*config.cy) {
+                visible = false;
+                break;
+            }
+            meas.corners.emplace_back(u, v);
+        } catch (...) {
+            visible = false;
+            break;
+        }
+    }
+    
+    if (visible && meas.corners.size() == 4) {
+        estimator.addTagMeasurement(meas);
+    }
 }
 
 int main() {
-    std::cout << "=== GTSAM iSAM2 Pose Estimator Demo ===" << std::endl;
-    std::cout << "Simulating robot moving in a pattern while detecting AprilTags" << std::endl;
-    std::cout << std::endl;
-
-    // Random number generator for noise
+    std::cout << "=== TagSLAM-Inspired Pose Estimator Demo ===" << std::endl;
+    
     std::random_device rd;
     std::mt19937 gen(rd());
     std::normal_distribution<> odom_noise_xy(0, ODOM_NOISE_XY);
     std::normal_distribution<> odom_noise_theta(0, ODOM_NOISE_THETA);
-    std::normal_distribution<> bearing_noise(0, BEARING_NOISE);
-    std::normal_distribution<> distance_noise(0, DISTANCE_NOISE);
+    std::normal_distribution<> pixel_noise(0, PIXEL_NOISE);
 
     // Configure estimator
     decode::EstimatorConfig config;
     config.relinearize_threshold = 0.01;
     config.relinearize_skip = 1;
-    config.odom_sigma_xy = 0.01;          // Slightly conservative
+    config.odom_sigma_xy = 0.01;
     config.odom_sigma_theta = 0.005;
-    config.default_bearing_sigma = 0.05;  // ~3 degrees
-    config.default_distance_sigma = 0.2;  // Larger uncertainty than bearing
+    config.default_pixel_sigma = 1.0;
+    
+    // Camera Setup (VGA)
+    config.fx = 800.0;
+    config.fy = 800.0;
+    config.cx = 320.0;
+    config.cy = 240.0;
+    config.camera_offset_z = 0.5; // Camera 0.5m off ground
+    // Camera facing forward (X), Z up? No, Z forward, Y down.
+    // Robot Frame: X fwd, Y left, Z up.
+    // Camera Frame: Z fwd, X right, Y down.
+    // Rotation Robot->Camera:
+    // Z_c = X_r
+    // X_c = -Y_r
+    // Y_c = -Z_r
+    // Yaw=-90, Pitch=0, Roll=-90?
+    config.camera_yaw = -M_PI/2.0;
+    config.camera_pitch = 0.0;
+    config.camera_roll = -M_PI/2.0;
 
 #if DECODE_ENABLE_RERUN
     config.enable_visualization = true;
-    config.visualization_app_id = "robot_localization_demo";
-    std::cout << "Rerun visualization enabled" << std::endl;
-#else
-    std::cout << "Rerun visualization disabled" << std::endl;
 #endif
 
-    // Create estimator
     decode::PoseEstimator estimator(config);
 
-    // Define AprilTag landmarks (corners of a 10x10 field)
-    std::vector<decode::Landmark> landmarks = {
-        {1, 0.0, 10.0},   // Tag 1 at top-left
-        {2, 10.0, 10.0},  // Tag 2 at top-right
-        {3, 10.0, 0.0},   // Tag 3 at bottom-right
-        {4, 0.0, 0.0},    // Tag 4 at bottom-left
-        {5, 5.0, 5.0},    // Tag 5 at center
-    };
+    // Define Landmarks (Walls of a 10x10 room)
+    std::vector<decode::Landmark> landmarks;
+    // Tag 1: X=10, Y=5, facing -X (Yaw=PI)
+    landmarks.push_back(createTag(1, 10.0, 5.0, 1.0, M_PI));
+    // Tag 2: X=5, Y=10, facing -Y (Yaw=-PI/2)
+    landmarks.push_back(createTag(2, 5.0, 10.0, 1.0, -M_PI/2.0));
+    // Tag 3: X=0, Y=5, facing +X (Yaw=0)
+    landmarks.push_back(createTag(3, 0.0, 5.0, 1.0, 0.0));
+    // Tag 4: X=5, Y=0, facing +Y (Yaw=PI/2)
+    landmarks.push_back(createTag(4, 5.0, 0.0, 1.0, M_PI/2.0));
 
-    std::cout << "Landmarks:" << std::endl;
-    for (const auto& lm : landmarks) {
-        std::cout << "  Tag " << lm.id << ": (" << lm.x << ", " << lm.y << ")" << std::endl;
-    }
-    std::cout << std::endl;
-
-    // Initialize with known starting pose (near bottom-left)
-    double initial_x = 1.0;
-    double initial_y = 1.0;
-    double initial_theta = 0.0;  // Facing +X direction
-
+    // Initialize
+    double initial_x = 2.0;
+    double initial_y = 2.0;
+    double initial_theta = 0.0;
     estimator.initialize(landmarks, initial_x, initial_y, initial_theta);
 
-    // Ground truth pose (what the robot actually is)
     double true_x = initial_x;
     double true_y = initial_y;
     double true_theta = initial_theta;
-
-    // Odometry-only estimate (for comparison - shows drift)
+    
     double odom_x = initial_x;
     double odom_y = initial_y;
     double odom_theta = initial_theta;
 
     std::cout << std::fixed << std::setprecision(3);
-    std::cout << "Starting simulation..." << std::endl;
     std::cout << "Step   | True Pose        | Odom-only        | Estimated        | Error" << std::endl;
     std::cout << "-------|------------------|------------------|------------------|------" << std::endl;
 
@@ -130,145 +224,46 @@ int main() {
 
     for (int i = 0; i < NUM_ITERATIONS; i++) {
         time += DT;
-
-        // Determine commanded motion (move in a square-ish pattern)
-        double cmd_v = ROBOT_SPEED;  // Forward velocity
-        double cmd_omega = 0.0;       // Angular velocity
-
-        // Turn at certain intervals to create a pattern
-        if (i > 0 && i % 200 == 0) {
-            cmd_omega = TURN_RATE;  // Start turning
-        }
-        if (i > 0 && i % 200 > 20 && i % 200 < 30) {
-            cmd_omega = TURN_RATE;  // Continue turning
-        }
-
-        // Compute true motion
-        double true_dx = cmd_v * DT * std::cos(true_theta);
-        double true_dy = cmd_v * DT * std::sin(true_theta);
-        double true_dtheta = cmd_omega * DT;
-
-        // Update true pose
-        true_x += true_dx;
-        true_y += true_dy;
-        true_theta = wrapAngle(true_theta + true_dtheta);
-
-        // Generate noisy odometry (in robot frame)
-        double odom_dx_robot = cmd_v * DT + odom_noise_xy(gen);
-        double odom_dy_robot = odom_noise_xy(gen);  // Lateral noise
-        double odom_dtheta = cmd_omega * DT + odom_noise_theta(gen);
-
-        // Update odometry-only estimate (for comparison)
-        odom_x += odom_dx_robot * std::cos(odom_theta) - odom_dy_robot * std::sin(odom_theta);
-        odom_y += odom_dx_robot * std::sin(odom_theta) + odom_dy_robot * std::cos(odom_theta);
-        odom_theta = wrapAngle(odom_theta + odom_dtheta);
-
-        // Create odometry measurement
-        decode::OdometryMeasurement odom;
-        odom.dx = odom_dx_robot;
-        odom.dy = odom_dy_robot;
-        odom.dtheta = odom_dtheta;
-        odom.timestamp = time;
-
-        // Process odometry
+        
+        // Motion
+        double cmd_v = ROBOT_SPEED;
+        double cmd_omega = (i % 200 > 150) ? TURN_RATE : 0.0;
+        
+        // True Update
+        true_x += cmd_v * DT * std::cos(true_theta);
+        true_y += cmd_v * DT * std::sin(true_theta);
+        true_theta = wrapAngle(true_theta + cmd_omega * DT);
+        
+        // Odom Update (Noisy)
+        double dx_r = cmd_v * DT + odom_noise_xy(gen);
+        double dy_r = odom_noise_xy(gen);
+        double dth = cmd_omega * DT + odom_noise_theta(gen);
+        
+        odom_x += dx_r * std::cos(odom_theta) - dy_r * std::sin(odom_theta);
+        odom_y += dx_r * std::sin(odom_theta) + dy_r * std::cos(odom_theta);
+        odom_theta = wrapAngle(odom_theta + dth);
+        
+        decode::OdometryMeasurement odom{dx_r, dy_r, dth, time};
         estimator.processOdometry(odom);
-
-        // Check for AprilTag detections periodically
+        
+        // Vision Update
         if (i % DETECTION_INTERVAL == 0) {
             for (const auto& lm : landmarks) {
-                double dist = computeDistance(true_x, true_y, lm.x, lm.y);
-
-                // Only detect tags within range
-                if (dist < DETECTION_RANGE) {
-                    // Compute true bearing and add noise
-                    double true_bearing = computeBearing(true_x, true_y, true_theta, lm.x, lm.y);
-                    double measured_bearing = true_bearing + bearing_noise(gen);
-                    double measured_distance = dist + distance_noise(gen);
-
-                    decode::BearingMeasurement bearing;
-                    bearing.tag_id = lm.id;
-                    bearing.bearing_rad = measured_bearing;
-                    bearing.turret_yaw_rad = 0.0;
-                    bearing.uncertainty_rad = BEARING_NOISE * 1.5;  // Slightly conservative
-                    bearing.timestamp = time;
-
-                    estimator.addBearingMeasurement(bearing);
-
-                    decode::DistanceMeasurement distance;
-                    distance.tag_id = lm.id;
-                    distance.distance_m = measured_distance;
-                    distance.turret_yaw_rad = 0.0;
-                    distance.uncertainty_m = DISTANCE_NOISE * 1.5;
-                    distance.timestamp = time;
-
-                    estimator.addDistanceMeasurement(distance);
-                }
+                simulateDetection(true_x, true_y, true_theta, lm, config, time, estimator, gen, pixel_noise);
             }
         }
-
-        // Perform update
+        
         decode::PoseEstimate est = estimator.update();
-
-        // Print progress every 100 iterations
-        if (i % 100 == 0 || i == NUM_ITERATIONS - 1) {
-            double error = std::sqrt((est.x - true_x) * (est.x - true_x) +
-                                     (est.y - true_y) * (est.y - true_y));
-            double odom_error = std::sqrt((odom_x - true_x) * (odom_x - true_x) +
-                                          (odom_y - true_y) * (odom_y - true_y));
-
-            std::cout << std::setw(6) << i << " | "
-                      << "(" << std::setw(5) << true_x << ", " << std::setw(5) << true_y << ") | "
-                      << "(" << std::setw(5) << odom_x << ", " << std::setw(5) << odom_y << ") | "
-                      << "(" << std::setw(5) << est.x << ", " << std::setw(5) << est.y << ") | "
-                      << std::setw(5) << error << " (odom: " << odom_error << ")"
-                      << std::endl;
+        
+        if (i % 100 == 0) {
+             double error = std::sqrt(std::pow(est.x - true_x, 2) + std::pow(est.y - true_y, 2));
+             std::cout << std::setw(6) << i << " | "
+                       << "(" << std::setw(5) << true_x << ", " << std::setw(5) << true_y << ") | "
+                       << "(" << std::setw(5) << odom_x << ", " << std::setw(5) << odom_y << ") | "
+                       << "(" << std::setw(5) << est.x << ", " << std::setw(5) << est.y << ") | "
+                       << std::setw(5) << error << std::endl;
         }
-
-#if DECODE_ENABLE_RERUN
-        // Small delay for visualization
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-#endif
     }
-
-    std::cout << std::endl;
-
-    // Final statistics
-    decode::PoseEstimate final_est = estimator.getCurrentEstimate();
-    double final_error = std::sqrt((final_est.x - true_x) * (final_est.x - true_x) +
-                                   (final_est.y - true_y) * (final_est.y - true_y));
-    double final_odom_error = std::sqrt((odom_x - true_x) * (odom_x - true_x) +
-                                        (odom_y - true_y) * (odom_y - true_y));
-
-    std::cout << "=== Final Results ===" << std::endl;
-    std::cout << "True final pose:      (" << true_x << ", " << true_y << ", " << true_theta << ")" << std::endl;
-    std::cout << "Estimated final pose: (" << final_est.x << ", " << final_est.y << ", " << final_est.theta << ")" << std::endl;
-    std::cout << "Odometry-only pose:   (" << odom_x << ", " << odom_y << ", " << odom_theta << ")" << std::endl;
-    std::cout << std::endl;
-    std::cout << "Estimator position error: " << final_error << " m" << std::endl;
-    std::cout << "Odometry-only error:      " << final_odom_error << " m" << std::endl;
-    std::cout << "Average solve time:       " << estimator.getAverageSolveTimeMs() << " ms" << std::endl;
-    std::cout << "Horizon size:             " << estimator.getHorizonSize() << " poses" << std::endl;
-    std::cout << "Improvement:              " << (final_odom_error - final_error) << " m ("
-              << ((final_odom_error - final_error) / final_odom_error * 100) << "% reduction)" << std::endl;
-
-    // Get estimate with covariance
-    decode::PoseEstimate est_with_cov = estimator.getCurrentEstimateWithCovariance();
-    if (est_with_cov.has_covariance) {
-        std::cout << std::endl;
-        std::cout << "Position uncertainty (1-sigma):" << std::endl;
-        std::cout << "  x:     " << std::sqrt(est_with_cov.covariance[0]) << " m" << std::endl;
-        std::cout << "  y:     " << std::sqrt(est_with_cov.covariance[4]) << " m" << std::endl;
-        std::cout << "  theta: " << std::sqrt(est_with_cov.covariance[8]) << " rad" << std::endl;
-    }
-
-    std::cout << std::endl;
-    std::cout << "Total poses in graph: " << estimator.getCurrentPoseIndex() + 1 << std::endl;
-
-#if DECODE_ENABLE_RERUN
-    std::cout << std::endl;
-    std::cout << "Visualization is open in Rerun viewer. Press Ctrl+C to exit." << std::endl;
-    std::this_thread::sleep_for(std::chrono::seconds(30));
-#endif
-
+    
     return 0;
 }

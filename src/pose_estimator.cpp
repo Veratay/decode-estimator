@@ -1,12 +1,16 @@
 #include "decode_estimator/pose_estimator.hpp"
-#include "decode_estimator/range_factor.hpp"
+#include "decode_estimator/tag_projection_factor.hpp"
 #include "decode_estimator/visualization.hpp"
 
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
+#include <gtsam/geometry/Cal3_S2.h>
+#include <gtsam/geometry/PinholeCamera.h>
+#include <gtsam/geometry/Pose3.h>
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -16,25 +20,6 @@
 using gtsam::symbol_shorthand::X;
 
 namespace decode {
-
-namespace {
-
-gtsam::Point2 rotatePoint(const gtsam::Point2& point, double angle_rad) {
-    double c = std::cos(angle_rad);
-    double s = std::sin(angle_rad);
-    return gtsam::Point2(c * point.x() - s * point.y(),
-                         s * point.x() + c * point.y());
-}
-
-gtsam::Pose2 cameraPoseFromRobot(const gtsam::Pose2& robot_pose,
-                                 const gtsam::Point2& camera_offset,
-                                 double turret_yaw_rad) {
-    gtsam::Point2 offset_in_robot = rotatePoint(camera_offset, turret_yaw_rad);
-    gtsam::Pose2 turret_to_camera(offset_in_robot.x(), offset_in_robot.y(), turret_yaw_rad);
-    return robot_pose.compose(turret_to_camera);
-}
-
-} // namespace
 
 PoseEstimator::PoseEstimator(const EstimatorConfig& config) : config_(config) {
     createNoiseModels();
@@ -127,8 +112,7 @@ void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
     current_timestamp_ = 0.0;
     pending_odom_delta_ = gtsam::Pose2();
     pending_odom_steps_ = 0;
-    pending_bearings_.clear();
-    pending_distances_.clear();
+    pending_tags_.clear();
 
     resetHorizonWithPrior(current_pose_, prior_noise_);
 
@@ -158,8 +142,7 @@ void PoseEstimator::reset() {
     current_timestamp_ = 0.0;
     pending_odom_delta_ = gtsam::Pose2();
     pending_odom_steps_ = 0;
-    pending_bearings_.clear();
-    pending_distances_.clear();
+    pending_tags_.clear();
     pending_graph_.resize(0);
     pending_values_.clear();
     landmark_map_.clear();
@@ -212,24 +195,14 @@ PoseEstimate PoseEstimator::processOdometry(const OdometryMeasurement& odom) {
     return estimate;
 }
 
-void PoseEstimator::addBearingMeasurement(const BearingMeasurement& bearing) {
+void PoseEstimator::addTagMeasurement(const TagMeasurement& measurement) {
     std::lock_guard<std::mutex> lock(mutex_);
-    pending_bearings_.push_back(bearing);
+    pending_tags_.push_back(measurement);
 }
 
-void PoseEstimator::addBearingMeasurements(const std::vector<BearingMeasurement>& bearings) {
+void PoseEstimator::addTagMeasurements(const std::vector<TagMeasurement>& measurements) {
     std::lock_guard<std::mutex> lock(mutex_);
-    pending_bearings_.insert(pending_bearings_.end(), bearings.begin(), bearings.end());
-}
-
-void PoseEstimator::addDistanceMeasurement(const DistanceMeasurement& distance) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    pending_distances_.push_back(distance);
-}
-
-void PoseEstimator::addDistanceMeasurements(const std::vector<DistanceMeasurement>& distances) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    pending_distances_.insert(pending_distances_.end(), distances.begin(), distances.end());
+    pending_tags_.insert(pending_tags_.end(), measurements.begin(), measurements.end());
 }
 
 PoseEstimate PoseEstimator::update() {
@@ -239,7 +212,7 @@ PoseEstimate PoseEstimator::update() {
         throw std::runtime_error("PoseEstimator not initialized");
     }
 
-    bool has_vision = !pending_bearings_.empty() || !pending_distances_.empty();
+    bool has_vision = !pending_tags_.empty();
     if (!has_vision) {
         PoseEstimate estimate;
         estimate.x = current_pose_.x();
@@ -251,10 +224,6 @@ PoseEstimate PoseEstimator::update() {
     }
 
     std::unordered_set<int32_t> visible_tags;
-    for (const auto& [id, point] : landmark_map_.getAllLandmarks()) {
-        (void)point;
-        visible_tags.insert(id);
-    }
 
     if (config_.compact_odometry && pending_odom_steps_ > 0) {
         if (current_pose_idx_ + 1 >= kHorizonCapacity) {
@@ -285,98 +254,78 @@ PoseEstimate PoseEstimator::update() {
         pending_values_.insert(X(current_pose_idx_), predicted);
     }
 
-    // Process pending distance measurements
-    gtsam::Point2 camera_offset(config_.camera_offset_x, config_.camera_offset_y);
-    for (const auto& distance : pending_distances_) {
-        auto landmark_opt = landmark_map_.getLandmark(distance.tag_id);
-        if (!landmark_opt) {
-            continue;
+    // Configuration objects
+    gtsam::Cal3_S2 intrinsics(config_.fx, config_.fy, 0.0, config_.cx, config_.cy);
+    gtsam::Pose3 extrinsics(
+        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
+        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
+    );
+    gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(current_pose_.theta(), 0.0, 0.0),
+                            gtsam::Point3(current_pose_.x(), current_pose_.y(), 0.0));
+
+    auto is_tag_visible = [&](const TagMeasurement& tag,
+                              const gtsam::Pose3& tag_pose_world,
+                              double tag_size) {
+        gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad), gtsam::Point3(0, 0, 0));
+        gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+        gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
+
+        double s = tag_size / 2.0;
+        const std::array<gtsam::Point3, 4> corners_local = {
+            gtsam::Point3(-s, -s, 0.0),
+            gtsam::Point3( s, -s, 0.0),
+            gtsam::Point3( s,  s, 0.0),
+            gtsam::Point3(-s,  s, 0.0),
+        };
+
+        for (const auto& corner : corners_local) {
+            auto projected = camera.projectSafe(tag_pose_world.transformFrom(corner));
+            if (!projected.second) {
+                return false;
+            }
         }
 
-        if (distance.distance_m <= 0.0) {
-            continue;
-        }
+        return true;
+    };
 
-        double sigma = (distance.uncertainty_m > 0) ? distance.uncertainty_m
-                                                     : config_.default_distance_sigma;
-        gtsam::Pose2 camera_pose = cameraPoseFromRobot(current_pose_, camera_offset,
-                                                       distance.turret_yaw_rad);
-        double dx = landmark_opt->x() - camera_pose.x();
-        double dy = landmark_opt->y() - camera_pose.y();
-        double predicted_range = std::sqrt(dx * dx + dy * dy);
-        double min_sigma = predicted_range * config_.default_bearing_sigma * 3.0;
-        if (sigma < min_sigma) {
-            sigma = min_sigma;
-        }
-
-        double range_residual = distance.distance_m - predicted_range;
-        if (std::abs(range_residual) > 3.0 * sigma) {
-            continue;
-        }
-        auto range_noise = gtsam::noiseModel::Isotropic::Sigma(1, sigma);
-
-        pending_graph_.add(RangeToKnownLandmarkFactor(
-            X(current_pose_idx_),
-            *landmark_opt,
-            camera_offset,
-            distance.turret_yaw_rad,
-            distance.distance_m,
-            range_noise));
-
-        // std::cout << "distance tag=" << distance.tag_id
-        //           << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
-        //           << ", " << current_pose_.theta() << ")"
-        //           << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
-        //           << " distance_m=" << distance.distance_m
-        //           << std::endl;
-    }
-    pending_distances_.clear();
-
-    // Process pending bearing measurements
-    for (const auto& bearing : pending_bearings_) {
-        auto landmark_opt = landmark_map_.getLandmark(bearing.tag_id);
+    // Process pending tag measurements
+    for (const auto& tag : pending_tags_) {
+        auto landmark_opt = landmark_map_.getLandmark(tag.tag_id);
         if (!landmark_opt) {
             // Unknown tag ID - skip
             continue;
         }
 
-        // Create bearing noise model from measurement uncertainty
-        double sigma = (bearing.uncertainty_rad > 0) ? bearing.uncertainty_rad
-                                                      : config_.default_bearing_sigma;
-        auto bearing_noise = gtsam::noiseModel::Isotropic::Sigma(1, sigma);
+        visible_tags.insert(tag.tag_id);
 
-        // Add bearing factor to current pose
-        pending_graph_.add(BearingToKnownLandmarkFactor(
-            X(current_pose_idx_),
-            *landmark_opt,
-            camera_offset,
-            bearing.turret_yaw_rad,
-            bearing.bearing_rad,
-            bearing_noise));
+        // Create 8D noise model
+        double sigma = (tag.pixel_sigma > 0) ? tag.pixel_sigma
+                                             : config_.default_pixel_sigma;
+        auto pixel_noise = gtsam::noiseModel::Isotropic::Sigma(8, sigma);
 
-#if DECODE_ENABLE_RERUN
-        if (visualizer_) {
-            PoseEstimate est;
-            gtsam::Pose2 camera_pose = cameraPoseFromRobot(current_pose_, camera_offset,
-                                                           bearing.turret_yaw_rad);
-            est.x = camera_pose.x();
-            est.y = camera_pose.y();
-            est.theta = camera_pose.theta();
-            est.timestamp = current_timestamp_;
-            est.has_covariance = false;
-            visualizer_->logBearingMeasurement(est, *landmark_opt, bearing.tag_id,
-                                               bearing.bearing_rad);
+        // Convert Landmark to Pose3
+        gtsam::Pose3 tag_pose_world(
+            gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
+            gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
+        );
+
+        if (!is_tag_visible(tag, tag_pose_world, landmark_opt->size)) {
+            continue;
         }
-#endif
 
-        // std::cout << "bearing tag=" << bearing.tag_id
-        //           << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
-        //           << ", " << current_pose_.theta() << ")"
-        //           << " landmark=(" << landmark_opt->x() << ", " << landmark_opt->y() << ")"
-        //           << " bearing_rad=" << bearing.bearing_rad
-        //           << std::endl;
+        // Add projection factor
+        pending_graph_.add(TagProjectionFactor(
+            X(current_pose_idx_),
+            tag_pose_world,
+            landmark_opt->size,
+            intrinsics,
+            extrinsics,
+            tag.turret_yaw_rad,
+            tag.corners,
+            pixel_noise
+        ));
     }
-    pending_bearings_.clear();
+    pending_tags_.clear();
 
     auto solve_start = std::chrono::steady_clock::now();
 
@@ -407,10 +356,6 @@ PoseEstimate PoseEstimator::update() {
     result.timestamp = current_timestamp_;
     result.has_covariance = false;
 
-    // std::cout << "solve_ms=" << last_solve_ms_
-    //           << " horizon=" << (current_pose_idx_ + 1)
-    //           << std::endl;
-
 #if DECODE_ENABLE_RERUN
     if (visualizer_) {
         PoseEstimate vis = result;
@@ -427,9 +372,7 @@ PoseEstimate PoseEstimator::update() {
             vis.has_covariance = false;
         }
 
-        visualizer_->logLandmarkRays(landmark_map_, result,
-                                     static_cast<int64_t>(current_pose_idx_),
-                                     visible_tags);
+        // Updated visualization call might be needed here, keeping basic pose log
         visualizer_->logPose(vis, current_pose_idx_);
     }
 #endif

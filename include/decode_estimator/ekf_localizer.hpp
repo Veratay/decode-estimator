@@ -16,10 +16,19 @@ struct EKFConfig {
     double prior_sigma_theta = 0.02;
     double odom_sigma_xy = 0.02;
     double odom_sigma_theta = 0.01;
-    double default_bearing_sigma = 0.05;
-    double default_distance_sigma = 0.2;
+    double default_pixel_sigma = 1.0;
+    
+    // Camera Parameters
+    double fx = 1000.0;
+    double fy = 1000.0;
+    double cx = 320.0;
+    double cy = 240.0;
     double camera_offset_x = 0.0;
     double camera_offset_y = 0.0;
+    double camera_offset_z = 0.5;
+    double camera_roll = 0.0;
+    double camera_pitch = 0.0;
+    double camera_yaw = 0.0;
 };
 
 class EkfLocalizer {
@@ -35,9 +44,7 @@ public:
 
     PoseEstimate processOdometry(const OdometryMeasurement& odom);
 
-    void addBearingMeasurement(const BearingMeasurement& bearing);
-
-    void addDistanceMeasurement(const DistanceMeasurement& distance);
+    void addTagMeasurement(const TagMeasurement& measurement);
 
     PoseEstimate getCurrentEstimate() const;
 
@@ -46,8 +53,7 @@ public:
     bool isInitialized() const;
 
 private:
-    void updateBearing(const BearingMeasurement& bearing);
-    void updateDistance(const DistanceMeasurement& distance);
+    void updateTag(const TagMeasurement& tag);
 
 private:
     EKFConfig config_;

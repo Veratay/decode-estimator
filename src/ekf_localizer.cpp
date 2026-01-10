@@ -1,10 +1,14 @@
 #include "decode_estimator/ekf_localizer.hpp"
 
-#include <gtsam/geometry/Point2.h>
-#include <gtsam/geometry/Pose2.h>
+#include <gtsam/geometry/Point3.h>
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/Rot3.h>
+#include <gtsam/geometry/Cal3_S2.h>
+#include <gtsam/geometry/PinholeCamera.h>
 
 #include <cmath>
 #include <stdexcept>
+#include <iostream>
 
 namespace decode {
 
@@ -18,22 +22,6 @@ double wrapAngle(double angle) {
         angle += 2.0 * M_PI;
     }
     return angle;
-}
-
-gtsam::Point2 rotatePoint(const gtsam::Point2& point, double angle_rad) {
-    double c = std::cos(angle_rad);
-    double s = std::sin(angle_rad);
-    return gtsam::Point2(c * point.x() - s * point.y(),
-                         s * point.x() + c * point.y());
-}
-
-gtsam::Pose2 cameraPoseFromRobot(const Eigen::Vector3d& state,
-                                 const gtsam::Point2& camera_offset,
-                                 double turret_yaw_rad) {
-    gtsam::Pose2 robot_pose(state(0), state(1), state(2));
-    gtsam::Point2 offset_in_robot = rotatePoint(camera_offset, turret_yaw_rad);
-    gtsam::Pose2 turret_to_camera(offset_in_robot.x(), offset_in_robot.y(), turret_yaw_rad);
-    return robot_pose.compose(turret_to_camera);
 }
 
 } // namespace
@@ -77,14 +65,17 @@ PoseEstimate EkfLocalizer::processOdometry(const OdometryMeasurement& odom) {
     double c = std::cos(theta);
     double s = std::sin(theta);
 
+    // Predict state
     state_(0) += c * odom.dx - s * odom.dy;
     state_(1) += s * odom.dx + c * odom.dy;
     state_(2) = wrapAngle(state_(2) + odom.dtheta);
 
+    // Jacobian of process model F w.r.t state
     Eigen::Matrix3d F = Eigen::Matrix3d::Identity();
     F(0, 2) = -s * odom.dx - c * odom.dy;
     F(1, 2) = c * odom.dx - s * odom.dy;
 
+    // Jacobian of process model V w.r.t noise
     Eigen::Matrix3d V = Eigen::Matrix3d::Zero();
     V(0, 0) = c;
     V(0, 1) = -s;
@@ -96,9 +87,9 @@ PoseEstimate EkfLocalizer::processOdometry(const OdometryMeasurement& odom) {
     Q(0, 0) = config_.odom_sigma_xy * config_.odom_sigma_xy;
     Q(1, 1) = config_.odom_sigma_xy * config_.odom_sigma_xy;
     Q(2, 2) = config_.odom_sigma_theta * config_.odom_sigma_theta;
-    Eigen::Matrix3d R = V * Q * V.transpose();
-
-    covariance_ = F * covariance_ * F.transpose() + R;
+    
+    // Propagate covariance
+    covariance_ = F * covariance_ * F.transpose() + V * Q * V.transpose();
     current_timestamp_ = odom.timestamp;
 
     PoseEstimate estimate;
@@ -110,20 +101,12 @@ PoseEstimate EkfLocalizer::processOdometry(const OdometryMeasurement& odom) {
     return estimate;
 }
 
-void EkfLocalizer::addBearingMeasurement(const BearingMeasurement& bearing) {
+void EkfLocalizer::addTagMeasurement(const TagMeasurement& measurement) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!initialized_) {
         throw std::runtime_error("EkfLocalizer not initialized");
     }
-    updateBearing(bearing);
-}
-
-void EkfLocalizer::addDistanceMeasurement(const DistanceMeasurement& distance) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!initialized_) {
-        throw std::runtime_error("EkfLocalizer not initialized");
-    }
-    updateDistance(distance);
+    updateTag(measurement);
 }
 
 PoseEstimate EkfLocalizer::getCurrentEstimate() const {
@@ -148,99 +131,102 @@ bool EkfLocalizer::isInitialized() const {
     return initialized_;
 }
 
-void EkfLocalizer::updateBearing(const BearingMeasurement& bearing) {
-    auto landmark_opt = landmark_map_.getLandmark(bearing.tag_id);
+void EkfLocalizer::updateTag(const TagMeasurement& tag) {
+    auto landmark_opt = landmark_map_.getLandmark(tag.tag_id);
     if (!landmark_opt) {
         return;
     }
+    
+    if (tag.corners.size() != 4) return;
 
-    gtsam::Point2 camera_offset(config_.camera_offset_x, config_.camera_offset_y);
-    auto predicted_bearing = [&](const Eigen::Vector3d& state) {
-        gtsam::Pose2 camera_pose = cameraPoseFromRobot(state, camera_offset,
-                                                       bearing.turret_yaw_rad);
-        double dx = landmark_opt->x() - camera_pose.x();
-        double dy = landmark_opt->y() - camera_pose.y();
-        return wrapAngle(std::atan2(dy, dx) - camera_pose.theta());
+    // Measurement vector z (8x1)
+    Eigen::Matrix<double, 8, 1> z;
+    for(int i=0; i<4; ++i) {
+        z(2*i) = tag.corners[i].first;
+        z(2*i+1) = tag.corners[i].second;
+    }
+
+    // Camera Intrinsics
+    gtsam::Cal3_S2 intrinsics(config_.fx, config_.fy, 0, config_.cx, config_.cy);
+    
+    // Extrinsics (constant)
+    gtsam::Pose3 extrinsics(
+        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
+        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
+    );
+
+    // Tag World Pose
+    gtsam::Pose3 tag_pose(
+        gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
+        gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
+    );
+
+    double s = landmark_opt->size / 2.0;
+    std::vector<gtsam::Point3> corners_local = {
+        {-s, -s, 0}, {s, -s, 0}, {s, s, 0}, {-s, s, 0}
     };
 
-    double predicted = predicted_bearing(state_);
-    double residual = wrapAngle(bearing.bearing_rad - predicted);
-    double sigma = (bearing.uncertainty_rad > 0.0) ? bearing.uncertainty_rad
-                                                   : config_.default_bearing_sigma;
+    // Measurement function h(x) and Jacobian H (8x3)
+    auto predict = [&](const Eigen::Vector3d& x_state) -> Eigen::Matrix<double, 8, 1> {
+        // Robot Pose3
+        gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(x_state(2), 0, 0),
+                                gtsam::Point3(x_state(0), x_state(1), 0));
+        
+        // Turret rotation (assumed 0 or handled externally - here using tag.turret_yaw_rad if applicable)
+        // But the TagMeasurement struct has turret_yaw_rad.
+        gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad), gtsam::Point3(0,0,0));
+        
+        gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+        gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
 
-    const double eps = 1e-6;
-    Eigen::RowVector3d H;
-    for (int i = 0; i < 3; ++i) {
-        Eigen::Vector3d perturbed = state_;
-        perturbed(i) += eps;
-        double predicted_perturbed = predicted_bearing(perturbed);
-        double diff = wrapAngle(predicted_perturbed - predicted);
-        H(i) = diff / eps;
-    }
-
-    double S = (H * covariance_ * H.transpose())(0, 0) + sigma * sigma;
-    if (S < 1e-9) {
-        return;
-    }
-    Eigen::Vector3d K = covariance_ * H.transpose() / S;
-
-    Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-    covariance_ = (I - K * H) * covariance_ * (I - K * H).transpose()
-                  + K * (sigma * sigma) * K.transpose();
-
-    state_ += K * residual;
-    state_(2) = wrapAngle(state_(2));
-}
-
-void EkfLocalizer::updateDistance(const DistanceMeasurement& distance) {
-    auto landmark_opt = landmark_map_.getLandmark(distance.tag_id);
-    if (!landmark_opt) {
-        return;
-    }
-
-    if (distance.distance_m <= 0.0) {
-        return;
-    }
-
-    gtsam::Point2 camera_offset(config_.camera_offset_x, config_.camera_offset_y);
-    auto predicted_range = [&](const Eigen::Vector3d& state) {
-        gtsam::Pose2 camera_pose = cameraPoseFromRobot(state, camera_offset,
-                                                       distance.turret_yaw_rad);
-        double dx = landmark_opt->x() - camera_pose.x();
-        double dy = landmark_opt->y() - camera_pose.y();
-        return std::sqrt(dx * dx + dy * dy);
+        Eigen::Matrix<double, 8, 1> h_vec;
+        for(int i=0; i<4; ++i) {
+            gtsam::Point3 pt_world = tag_pose.transformFrom(corners_local[i]);
+            try {
+                gtsam::Point2 uv = camera.project(pt_world);
+                h_vec(2*i) = uv.x();
+                h_vec(2*i+1) = uv.y();
+            } catch (...) {
+                h_vec(2*i) = 0;
+                h_vec(2*i+1) = 0;
+            }
+        }
+        return h_vec;
     };
 
-    double range = predicted_range(state_);
-    if (range < 1e-6) {
-        return;
+    Eigen::Matrix<double, 8, 1> z_pred = predict(state_);
+    Eigen::Matrix<double, 8, 1> residual = z - z_pred;
+
+    // Compute H by numerical differentiation
+    Eigen::Matrix<double, 8, 3> H;
+    double eps = 1e-5;
+    for(int i=0; i<3; ++i) {
+        Eigen::Vector3d state_plus = state_;
+        state_plus(i) += eps;
+        Eigen::Matrix<double, 8, 1> z_plus = predict(state_plus);
+        H.col(i) = (z_plus - z_pred) / eps;
     }
 
-    double residual = distance.distance_m - range;
-    double sigma = (distance.uncertainty_m > 0.0) ? distance.uncertainty_m
-                                                  : config_.default_distance_sigma;
+    // Measurement noise R
+    double sigma = (tag.pixel_sigma > 0) ? tag.pixel_sigma : config_.default_pixel_sigma;
+    Eigen::Matrix<double, 8, 8> R = Eigen::Matrix<double, 8, 8>::Identity() * (sigma * sigma);
 
-    const double eps = 1e-6;
-    Eigen::RowVector3d H;
-    for (int i = 0; i < 3; ++i) {
-        Eigen::Vector3d perturbed = state_;
-        perturbed(i) += eps;
-        double range_perturbed = predicted_range(perturbed);
-        H(i) = (range_perturbed - range) / eps;
-    }
+    // EKF Update
+    // S = H*P*H' + R
+    Eigen::Matrix<double, 8, 8> S = H * covariance_ * H.transpose() + R;
+    
+    // K = P*H'*S^-1
+    Eigen::Matrix<double, 3, 8> K = covariance_ * H.transpose() * S.inverse();
 
-    double S = (H * covariance_ * H.transpose())(0, 0) + sigma * sigma;
-    if (S < 1e-9) {
-        return;
-    }
-    Eigen::Vector3d K = covariance_ * H.transpose() / S;
-
-    Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-    covariance_ = (I - K * H) * covariance_ * (I - K * H).transpose()
-                  + K * (sigma * sigma) * K.transpose();
-
-    state_ += K * residual;
+    // Update state
+    Eigen::Vector3d correction = K * residual;
+    state_ += correction;
     state_(2) = wrapAngle(state_(2));
+
+    // Update covariance
+    // P = (I - K*H)*P
+    Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+    covariance_ = (I - K * H) * covariance_;
 }
 
 } // namespace decode

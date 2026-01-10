@@ -1,6 +1,5 @@
 #pragma once
 
-#include "bearing_factor.hpp"
 #include "landmark_map.hpp"
 #include "types.hpp"
 #include "visualization.hpp"
@@ -36,14 +35,22 @@ struct EstimatorConfig {
     /// If true, compacts odometry between vision updates into a single factor
     bool compact_odometry = true;
 
-    /// Default bearing uncertainty if not provided per measurement (radians, ~3 degrees)
-    double default_bearing_sigma = 0.05;
-    /// Default distance uncertainty if not provided per measurement (meters)
-    double default_distance_sigma = 0.2;
+    /// Default pixel uncertainty (pixels)
+    double default_pixel_sigma = 1.0;
 
-    /// Camera offset in turret frame (meters)
+    /// Camera Intrinsics
+    double fx = 1000.0;
+    double fy = 1000.0;
+    double cx = 320.0;
+    double cy = 240.0;
+
+    /// Camera Extrinsics (Robot body to Camera)
     double camera_offset_x = 0.0;
     double camera_offset_y = 0.0;
+    double camera_offset_z = 0.5;
+    double camera_roll = 0.0;
+    double camera_pitch = 0.0;
+    double camera_yaw = 0.0;
 
     // Visualization
     bool enable_visualization = false;
@@ -53,9 +60,8 @@ struct EstimatorConfig {
 /**
  * @brief 2D robot pose estimator using GTSAM iSAM2
  *
- * Fuses odometry (BetweenFactor) with bearing and distance measurements to known
- * AprilTag landmarks (custom factors) for accurate localization that corrects
- * odometry drift.
+ * Fuses odometry (BetweenFactor) with AprilTag corner measurements (TagProjectionFactor)
+ * to known landmarks for accurate localization that corrects odometry drift.
  *
  * Thread-safe: all public methods are mutex-protected.
  */
@@ -95,28 +101,16 @@ public:
     PoseEstimate processOdometry(const OdometryMeasurement& odom);
 
     /**
-     * @brief Add a bearing measurement for the next update
-     * @param bearing  Bearing measurement to known AprilTag (camera frame)
+     * @brief Add a tag measurement for the next update
+     * @param measurement Tag measurement (pixels)
      */
-    void addBearingMeasurement(const BearingMeasurement& bearing);
+    void addTagMeasurement(const TagMeasurement& measurement);
 
     /**
-     * @brief Add multiple bearing measurements for the next update
-     * @param bearings  Vector of bearing measurements
+     * @brief Add multiple tag measurements for the next update
+     * @param measurements Vector of tag measurements
      */
-    void addBearingMeasurements(const std::vector<BearingMeasurement>& bearings);
-
-    /**
-     * @brief Add a distance measurement for the next update
-     * @param distance  Distance measurement to known AprilTag (camera frame)
-     */
-    void addDistanceMeasurement(const DistanceMeasurement& distance);
-
-    /**
-     * @brief Add multiple distance measurements for the next update
-     * @param distances  Vector of distance measurements
-     */
-    void addDistanceMeasurements(const std::vector<DistanceMeasurement>& distances);
+    void addTagMeasurements(const std::vector<TagMeasurement>& measurements);
 
     /**
      * @brief Perform iSAM2 update
@@ -212,9 +206,8 @@ private:
     gtsam::SharedNoiseModel prior_noise_;
     gtsam::SharedNoiseModel odom_noise_;
 
-    // Pending bearing measurements for next update
-    std::vector<BearingMeasurement> pending_bearings_;
-    std::vector<DistanceMeasurement> pending_distances_;
+    // Pending measurements for next update
+    std::vector<TagMeasurement> pending_tags_;
 
     // Thread safety
     mutable std::mutex mutex_;

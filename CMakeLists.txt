@@ -144,8 +144,7 @@ endif()
 add_library(decode_estimator STATIC
     src/ekf_localizer.cpp
     src/pose_estimator.cpp
-    src/bearing_factor.cpp
-    src/range_factor.cpp
+    src/tag_projection_factor.cpp
     src/landmark_map.cpp
     src/visualization.cpp
 )
@@ -184,8 +183,7 @@ if(JNI_FOUND OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR DECODE_BUILD_FOR_ANDROID
     add_library(decode_estimator_jni SHARED
         src/ekf_localizer.cpp
         src/pose_estimator.cpp
-        src/bearing_factor.cpp
-        src/range_factor.cpp
+        src/tag_projection_factor.cpp
         src/landmark_map.cpp
         src/visualization.cpp
         src/pose_estimator_jni.cpp

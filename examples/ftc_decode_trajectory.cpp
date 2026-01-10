@@ -9,6 +9,10 @@
 #include <decode_estimator/ekf_localizer.hpp>
 #include <decode_estimator/pose_estimator.hpp>
 
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/Cal3_S2.h>
+#include <gtsam/geometry/PinholeCamera.h>
+
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -26,13 +30,11 @@ constexpr int NUM_ITERATIONS = 20000;
 // Noise parameters for simulation
 constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
 constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
-constexpr double BEARING_NOISE = 0.025;     // radians (~1.4 degrees)
-constexpr double DISTANCE_NOISE = 0.12;     // meters (less confident than bearing)
+constexpr double PIXEL_NOISE = 1.0;         // pixels
 constexpr double TURRET_YAW_AMPLITUDE = 0.8; // radians
 constexpr double TURRET_YAW_RATE = 0.6;      // rad/s
 
 // Detection parameters
-constexpr double DETECTION_RANGE = 3.0;     // meters
 constexpr int DETECTION_INTERVAL = 5;       // Check for tags every N steps
 
 // Field parameters (FTC field is ~12ft => 3.66m)
@@ -51,21 +53,93 @@ double wrapAngle(double angle) {
     return angle;
 }
 
-/// Compute bearing from robot pose to landmark (in robot frame)
-double computeBearing(double robot_x, double robot_y, double robot_theta,
-                      double landmark_x, double landmark_y) {
-    double dx = landmark_x - robot_x;
-    double dy = landmark_y - robot_y;
-    double global_bearing = std::atan2(dy, dx);
-    return wrapAngle(global_bearing - robot_theta);
+// Helper to create a tag facing a specific direction
+decode::Landmark createTag(int32_t id, double x, double y, double z, double facing_yaw) {
+    decode::Landmark lm;
+    lm.id = id;
+    lm.x = x;
+    lm.y = y;
+    lm.z = z;
+    lm.size = 0.2; // 20cm tag
+    
+    // Tag rotation: Z out (facing direction), Y down, X right
+    lm.yaw = facing_yaw;
+    lm.pitch = -M_PI / 2.0; // Rotate to bring Z from Up to Horizontal
+    lm.roll = -M_PI / 2.0;  // Adjust roll
+    
+    return lm;
 }
 
-/// Compute distance from robot to landmark
-double computeDistance(double robot_x, double robot_y,
-                       double landmark_x, double landmark_y) {
-    double dx = landmark_x - robot_x;
-    double dy = landmark_y - robot_y;
-    return std::sqrt(dx * dx + dy * dy);
+void simulateDetection(double true_x, double true_y, double true_theta,
+                       const decode::Landmark& tag,
+                       const decode::EstimatorConfig& config,
+                       double turret_yaw,
+                       double time,
+                       decode::PoseEstimator& estimator,
+                       decode::EkfLocalizer& ekf,
+                       std::mt19937& gen,
+                       std::normal_distribution<>& pixel_noise) {
+    
+    // Robot Pose3
+    gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(true_theta, 0, 0),
+                            gtsam::Point3(true_x, true_y, 0));
+    
+    // Turret Pose3
+    gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(turret_yaw), gtsam::Point3(0,0,0));
+
+    // Extrinsics (Body -> Camera)
+    gtsam::Pose3 extrinsics(gtsam::Rot3::Ypr(config.camera_yaw, config.camera_pitch, config.camera_roll),
+                            gtsam::Point3(config.camera_offset_x, config.camera_offset_y, config.camera_offset_z));
+    
+    // Camera World Pose
+    gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+    
+    // Camera Model
+    gtsam::Cal3_S2 intrinsics(config.fx, config.fy, 0, config.cx, config.cy);
+    gtsam::PinholeCamera<gtsam::Cal3_S2> camera(camera_pose, intrinsics);
+    
+    // Tag Pose3
+    gtsam::Pose3 tag_pose(gtsam::Rot3::Ypr(tag.yaw, tag.pitch, tag.roll),
+                          gtsam::Point3(tag.x, tag.y, tag.z));
+                          
+    double s = tag.size / 2.0;
+    std::vector<gtsam::Point3> corners_local = {
+        {-s, -s, 0}, {s, -s, 0}, {s, s, 0}, {-s, s, 0}
+    };
+    
+    decode::TagMeasurement meas;
+    meas.tag_id = tag.id;
+    meas.timestamp = time;
+    meas.pixel_sigma = PIXEL_NOISE;
+    meas.turret_yaw_rad = turret_yaw;
+    
+    bool visible = true;
+    for (const auto& pt_local : corners_local) {
+        gtsam::Point3 pt_world = tag_pose.transformFrom(pt_local);
+        
+        try {
+            gtsam::Point2 px = camera.project(pt_world);
+            
+            // Add noise
+            double u = px.x() + pixel_noise(gen);
+            double v = px.y() + pixel_noise(gen);
+            
+            // Check bounds (simple check)
+            if (u < 0 || u > 2*config.cx || v < 0 || v > 2*config.cy) {
+                visible = false;
+                break;
+            }
+            meas.corners.emplace_back(u, v);
+        } catch (...) {
+            visible = false;
+            break;
+        }
+    }
+    
+    if (visible && meas.corners.size() == 4) {
+        estimator.addTagMeasurement(meas);
+        ekf.addTagMeasurement(meas);
+    }
 }
 
 int main() {
@@ -78,8 +152,7 @@ int main() {
     std::mt19937 gen(rd());
     std::normal_distribution<> odom_noise_xy(0, ODOM_NOISE_XY);
     std::normal_distribution<> odom_noise_theta(0, ODOM_NOISE_THETA);
-    std::normal_distribution<> bearing_noise(0, BEARING_NOISE);
-    std::normal_distribution<> distance_noise(0, DISTANCE_NOISE);
+    std::normal_distribution<> pixel_noise(0, PIXEL_NOISE);
 
     // Configure estimator
     decode::EstimatorConfig config;
@@ -87,8 +160,15 @@ int main() {
     config.relinearize_skip = 1;
     config.odom_sigma_xy = 0.01;
     config.odom_sigma_theta = 0.005;
-    config.default_bearing_sigma = 0.05;
-    config.default_distance_sigma = 0.2;
+    config.default_pixel_sigma = 1.0;
+    
+    config.fx = 800.0;
+    config.fy = 800.0;
+    config.cx = 320.0;
+    config.cy = 240.0;
+    config.camera_offset_z = 0.4;
+    config.camera_yaw = -M_PI/2.0;
+    config.camera_roll = -M_PI/2.0;
 
 #if DECODE_ENABLE_RERUN
     config.enable_visualization = true;
@@ -104,15 +184,30 @@ int main() {
     ekf_config.prior_sigma_theta = config.prior_sigma_theta;
     ekf_config.odom_sigma_xy = config.odom_sigma_xy;
     ekf_config.odom_sigma_theta = config.odom_sigma_theta;
-    ekf_config.default_bearing_sigma = config.default_bearing_sigma;
-    ekf_config.default_distance_sigma = config.default_distance_sigma;
+    ekf_config.default_pixel_sigma = config.default_pixel_sigma;
+    ekf_config.fx = config.fx;
+    ekf_config.fy = config.fy;
+    ekf_config.cx = config.cx;
+    ekf_config.cy = config.cy;
+    ekf_config.camera_offset_x = config.camera_offset_x;
+    ekf_config.camera_offset_y = config.camera_offset_y;
+    ekf_config.camera_offset_z = config.camera_offset_z;
+    ekf_config.camera_roll = config.camera_roll;
+    ekf_config.camera_pitch = config.camera_pitch;
+    ekf_config.camera_yaw = config.camera_yaw;
+    
     decode::EkfLocalizer ekf(ekf_config);
 
     // AprilTags: one per corner, but only on two adjacent corners
-    std::vector<decode::Landmark> landmarks = {
-        {1, CORNER_TAG_OFFSET, CORNER_TAG_OFFSET},
-        {2, FIELD_SIZE - CORNER_TAG_OFFSET, CORNER_TAG_OFFSET},
-    };
+    std::vector<decode::Landmark> landmarks;
+    // Tag 1: Top-Left Corner, facing Southeast? Or just South/East?
+    // Let's put tags on the walls.
+    // Tag 1 (id 1): Near (0,0)? No, corners are (0,0), (0,S), (S,S), (S,0).
+    // Tag 1: Near (0, FIELD_SIZE).
+    landmarks.push_back(createTag(1, CORNER_TAG_OFFSET, FIELD_SIZE, 0.5, -M_PI/2.0)); // Facing South (down Y)
+    
+    // Tag 2: Near (FIELD_SIZE, FIELD_SIZE).
+    landmarks.push_back(createTag(2, FIELD_SIZE, FIELD_SIZE - CORNER_TAG_OFFSET, 0.5, M_PI)); // Facing West (neg X)
 
     std::cout << "Landmarks:" << std::endl;
     for (const auto& lm : landmarks) {
@@ -129,13 +224,6 @@ int main() {
         {FIELD_SIZE - 0.6, 0.6},
         {FIELD_SIZE / 2.0, FIELD_SIZE / 2.0},
     };
-
-    std::cout << "Trajectory waypoints:" << std::endl;
-    for (size_t i = 0; i < waypoints.size(); ++i) {
-        std::cout << "  " << i + 1 << ": (" << waypoints[i].x << ", "
-                  << waypoints[i].y << ")" << std::endl;
-    }
-    std::cout << std::endl;
 
     // Initialize with known starting pose
     double initial_x = waypoints.front().x;
@@ -212,33 +300,7 @@ int main() {
 
         if (i % DETECTION_INTERVAL == 0) {
             for (const auto& lm : landmarks) {
-                double dist = computeDistance(true_x, true_y, lm.x, lm.y);
-                if (dist < DETECTION_RANGE) {
-                    double true_bearing = computeBearing(true_x, true_y, true_theta, lm.x, lm.y);
-                    double turret_bearing = wrapAngle(true_bearing - turret_yaw);
-                    double measured_bearing = turret_bearing + bearing_noise(gen);
-                    double measured_distance = dist + distance_noise(gen);
-
-                    decode::BearingMeasurement bearing;
-                    bearing.tag_id = lm.id;
-                    bearing.bearing_rad = measured_bearing;
-                    bearing.turret_yaw_rad = turret_yaw;
-                    bearing.uncertainty_rad = BEARING_NOISE * 1.5;
-                    bearing.timestamp = time;
-
-                    estimator.addBearingMeasurement(bearing);
-                    ekf.addBearingMeasurement(bearing);
-
-                    decode::DistanceMeasurement distance;
-                    distance.tag_id = lm.id;
-                    distance.distance_m = measured_distance;
-                    distance.turret_yaw_rad = turret_yaw;
-                    distance.uncertainty_m = DISTANCE_NOISE * 1.5;
-                    distance.timestamp = time;
-
-                    estimator.addDistanceMeasurement(distance);
-                    ekf.addDistanceMeasurement(distance);
-                }
+                simulateDetection(true_x, true_y, true_theta, lm, config, turret_yaw, time, estimator, ekf, gen, pixel_noise);
             }
         }
 
