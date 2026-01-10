@@ -37,7 +37,7 @@ decode::PoseEstimator* from_handle(jlong handle) {
 } // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) {
+Java_sigmacorns_control_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) {
     try {
         auto* estimator = new decode::PoseEstimator();
         return reinterpret_cast<jlong>(estimator);
@@ -51,7 +51,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) 
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
+Java_sigmacorns_control_PoseEstimatorBridge_nativeCreateWithConfig(
     JNIEnv* env, jclass, jdouble prior_sigma_xy, jdouble prior_sigma_theta,
     jdouble odom_sigma_xy, jdouble odom_sigma_theta, jdouble default_pixel_sigma,
     jdouble relinearize_threshold, jint relinearize_skip, jboolean enable_partial_relinearization,
@@ -126,7 +126,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass, jlong handle) {
+Java_sigmacorns_control_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_argument(env, "PoseEstimator handle is null");
         return;
@@ -137,7 +137,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass,
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeInitialize(
+Java_sigmacorns_control_PoseEstimatorBridge_nativeInitialize(
     JNIEnv* env, jclass, jlong handle, jintArray tag_ids, 
     jdoubleArray lm_x, jdoubleArray lm_y, jdoubleArray lm_z,
     jdoubleArray lm_roll, jdoubleArray lm_pitch, jdoubleArray lm_yaw,
@@ -202,7 +202,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeInitialize(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeReset(JNIEnv* env, jclass, jlong handle) {
+Java_sigmacorns_control_PoseEstimatorBridge_nativeReset(JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
         return;
@@ -219,7 +219,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeReset(JNIEnv* env, jclass, j
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeProcessOdometry(
+Java_sigmacorns_control_PoseEstimatorBridge_nativeProcessOdometry(
     JNIEnv* env, jclass, jlong handle, jdouble dx, jdouble dy, jdouble dtheta,
     jdouble timestamp) {
     if (handle == 0) {
@@ -239,7 +239,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeProcessOdometry(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeAddTagMeasurement(
+Java_sigmacorns_control_PoseEstimatorBridge_nativeAddTagMeasurement(
     JNIEnv* env, jclass, jlong handle, jint tag_id, 
     jdoubleArray corners, // Expecting 8 doubles: u1,v1, u2,v2, u3,v3, u4,v4
     jdouble pixel_sigma, jdouble timestamp, jdouble turret_yaw_rad) {
@@ -279,7 +279,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeAddTagMeasurement(
     env->ReleaseDoubleArrayElements(corners, c, JNI_ABORT);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_decode_estimator_PoseEstimatorBridge_nativeUpdate(
+extern "C" JNIEXPORT void JNICALL Java_sigmacorns_control_PoseEstimatorBridge_nativeUpdate(
     JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
@@ -297,7 +297,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_decode_estimator_PoseEstimatorBridge_
 }
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeGetCurrentEstimate(JNIEnv* env,
+Java_sigmacorns_control_PoseEstimatorBridge_nativeGetCurrentEstimate(JNIEnv* env,
                                                                         jclass,
                                                                         jlong handle) {
     if (handle == 0) {
@@ -329,7 +329,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeGetCurrentEstimate(JNIEnv* e
 }
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeGetCurrentEstimateWithCovariance(
+Java_sigmacorns_control_PoseEstimatorBridge_nativeGetCurrentEstimateWithCovariance(
     JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
@@ -370,7 +370,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeGetCurrentEstimateWithCovari
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeIsInitialized(JNIEnv* env,
+Java_sigmacorns_control_PoseEstimatorBridge_nativeIsInitialized(JNIEnv* env,
                                                                    jclass,
                                                                    jlong handle) {
     if (handle == 0) {
@@ -390,7 +390,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeIsInitialized(JNIEnv* env,
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeGetLastSolveTimeMs(JNIEnv* env,
+Java_sigmacorns_control_PoseEstimatorBridge_nativeGetLastSolveTimeMs(JNIEnv* env,
                                                                         jclass,
                                                                         jlong handle) {
     if (handle == 0) {
@@ -410,7 +410,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeGetLastSolveTimeMs(JNIEnv* e
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
-Java_com_decode_estimator_PoseEstimatorBridge_nativeGetAverageSolveTimeMs(JNIEnv* env,
+Java_sigmacorns_control_PoseEstimatorBridge_nativeGetAverageSolveTimeMs(JNIEnv* env,
                                                                            jclass,
                                                                            jlong handle) {
     if (handle == 0) {

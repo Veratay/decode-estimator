@@ -140,7 +140,7 @@ if [[ "$build_android" == "ON" ]]; then
         -DCMAKE_TOOLCHAIN_FILE="$toolchain_file"
         -DANDROID_ABI="$android_abi"
         -DANDROID_PLATFORM="android-$android_api_level"
-        -DANDROID_STL=c++_shared
+        -DANDROID_STL=c++_static
         -DDECODE_BUILD_FOR_ANDROID=ON
     )
 

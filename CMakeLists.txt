@@ -235,6 +235,10 @@ if(JNI_FOUND OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR DECODE_BUILD_FOR_ANDROID
         target_link_libraries(decode_estimator_jni PRIVATE m dl)
     endif()
 
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android" OR DECODE_BUILD_FOR_ANDROID)
+        target_link_libraries(decode_estimator_jni PRIVATE c++_static)
+    endif()
+
     # Add gc-sections for smaller binary size
     target_link_options(decode_estimator_jni PRIVATE -Wl,--gc-sections)
     target_compile_options(decode_estimator_jni PRIVATE -ffunction-sections -fdata-sections)

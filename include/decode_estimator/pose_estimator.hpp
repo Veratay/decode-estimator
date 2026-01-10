@@ -57,7 +57,7 @@ struct EstimatorConfig {
     /// Post-process estimates after vision gap resets
     bool enable_post_process = true;
     double post_process_vision_gap_s = 0.4;
-    double post_process_settle_s = 0.5;
+    double post_process_settle_s = 2.0;
     int post_process_settle_updates = 3;
 
     /// Camera Intrinsics
