@@ -17,8 +17,8 @@ namespace decode {
  * with known position. Unlike GTSAM's BearingFactor which treats the landmark
  * as a variable, this factor uses a fixed landmark position for efficiency.
  *
- * The measurement is the bearing angle from the robot to the landmark in
- * the robot's local frame (0 = forward, positive = counterclockwise).
+ * The measurement is the bearing angle from the camera to the landmark in
+ * the camera's local frame (0 = forward, positive = counterclockwise).
  *
  * Error = measured_bearing - predicted_bearing (on SO(2) manifold)
  */
@@ -35,11 +35,15 @@ public:
      * @brief Constructor with Rot2 bearing
      * @param poseKey   Key for the robot pose variable
      * @param landmark  Known landmark position in world frame
+     * @param camera_offset  Camera offset in turret frame
+     * @param turret_yaw_rad Turret yaw relative to robot (radians)
      * @param measured  Measured bearing angle (as Rot2)
      * @param model     Noise model (must be 1-dimensional for bearing)
      */
     BearingToKnownLandmarkFactor(gtsam::Key poseKey,
                                   const gtsam::Point2& landmark,
+                                  const gtsam::Point2& camera_offset,
+                                  double turret_yaw_rad,
                                   const gtsam::Rot2& measured,
                                   const gtsam::SharedNoiseModel& model);
 
@@ -47,8 +51,28 @@ public:
      * @brief Constructor with bearing as double (radians)
      * @param poseKey       Key for the robot pose variable
      * @param landmark      Known landmark position in world frame
+     * @param camera_offset  Camera offset in turret frame
+     * @param turret_yaw_rad Turret yaw relative to robot (radians)
      * @param bearing_rad   Measured bearing angle in radians (0 = forward)
      * @param model         Noise model (must be 1-dimensional for bearing)
+     */
+    BearingToKnownLandmarkFactor(gtsam::Key poseKey,
+                                  const gtsam::Point2& landmark,
+                                  const gtsam::Point2& camera_offset,
+                                  double turret_yaw_rad,
+                                  double bearing_rad,
+                                  const gtsam::SharedNoiseModel& model);
+
+    /**
+     * @brief Backward-compatible constructor (zero offset, zero turret yaw)
+     */
+    BearingToKnownLandmarkFactor(gtsam::Key poseKey,
+                                  const gtsam::Point2& landmark,
+                                  const gtsam::Rot2& measured,
+                                  const gtsam::SharedNoiseModel& model);
+
+    /**
+     * @brief Backward-compatible constructor (zero offset, zero turret yaw)
      */
     BearingToKnownLandmarkFactor(gtsam::Key poseKey,
                                   const gtsam::Point2& landmark,
@@ -85,7 +109,9 @@ public:
 
 private:
     gtsam::Point2 landmark_; ///< Known landmark position in world frame
-    gtsam::Rot2 measured_;   ///< Measured bearing angle in robot frame
+    gtsam::Rot2 measured_;   ///< Measured bearing angle in camera frame
+    gtsam::Point2 camera_offset_; ///< Camera offset in turret frame
+    double turret_yaw_rad_ = 0.0; ///< Turret yaw relative to robot
 };
 
 } // namespace decode

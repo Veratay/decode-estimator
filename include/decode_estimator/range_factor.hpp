@@ -13,7 +13,7 @@ namespace decode {
  * @brief Unary factor for range measurement to a known landmark.
  *
  * This factor constrains a Pose2 based on the distance to a fixed landmark.
- * The measurement is the Euclidean range from the robot to the landmark
+ * The measurement is the Euclidean range from the camera to the landmark
  * in the world frame.
  *
  * Error = measured_range - predicted_range
@@ -31,8 +31,20 @@ public:
      * @brief Constructor with range measurement
      * @param poseKey   Key for the robot pose variable
      * @param landmark  Known landmark position in world frame
+     * @param camera_offset  Camera offset in turret frame
+     * @param turret_yaw_rad Turret yaw relative to robot (radians)
      * @param measured  Measured range (meters)
      * @param model     Noise model (must be 1-dimensional for range)
+     */
+    RangeToKnownLandmarkFactor(gtsam::Key poseKey,
+                               const gtsam::Point2& landmark,
+                               const gtsam::Point2& camera_offset,
+                               double turret_yaw_rad,
+                               double measured,
+                               const gtsam::SharedNoiseModel& model);
+
+    /**
+     * @brief Backward-compatible constructor (zero offset, zero turret yaw)
      */
     RangeToKnownLandmarkFactor(gtsam::Key poseKey,
                                const gtsam::Point2& landmark,
@@ -70,6 +82,8 @@ public:
 private:
     gtsam::Point2 landmark_; ///< Known landmark position in world frame
     double measured_ = 0.0;  ///< Measured range in meters
+    gtsam::Point2 camera_offset_; ///< Camera offset in turret frame
+    double turret_yaw_rad_ = 0.0; ///< Turret yaw relative to robot
 };
 
 } // namespace decode

@@ -54,7 +54,7 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
     JNIEnv* env, jclass, jdouble prior_sigma_xy, jdouble prior_sigma_theta,
     jdouble odom_sigma_xy, jdouble odom_sigma_theta, jdouble default_bearing_sigma,
-    jdouble default_distance_sigma) {
+    jdouble default_distance_sigma, jdouble camera_offset_x, jdouble camera_offset_y) {
     try {
         decode::EstimatorConfig config;
         config.prior_sigma_xy = prior_sigma_xy;
@@ -63,6 +63,8 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeCreateWithConfig(
         config.odom_sigma_theta = odom_sigma_theta;
         config.default_bearing_sigma = default_bearing_sigma;
         config.default_distance_sigma = default_distance_sigma;
+        config.camera_offset_x = camera_offset_x;
+        config.camera_offset_y = camera_offset_y;
 
         auto* estimator = new decode::PoseEstimator(config);
         return reinterpret_cast<jlong>(estimator);
@@ -184,7 +186,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeProcessOdometry(
 extern "C" JNIEXPORT void JNICALL
 Java_com_decode_estimator_PoseEstimatorBridge_nativeAddBearingMeasurement(
     JNIEnv* env, jclass, jlong handle, jint tag_id, jdouble bearing_rad,
-    jdouble uncertainty_rad, jdouble timestamp) {
+    jdouble turret_yaw_rad, jdouble uncertainty_rad, jdouble timestamp) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
         return;
@@ -193,7 +195,11 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeAddBearingMeasurement(
     auto* estimator = from_handle(handle);
     try {
         decode::BearingMeasurement bearing{
-            static_cast<int32_t>(tag_id), bearing_rad, uncertainty_rad, timestamp};
+            static_cast<int32_t>(tag_id),
+            bearing_rad,
+            turret_yaw_rad,
+            uncertainty_rad,
+            timestamp};
         estimator->addBearingMeasurement(bearing);
     } catch (const std::exception& e) {
         throw_runtime_exception(env,
@@ -206,7 +212,7 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeAddBearingMeasurement(
 extern "C" JNIEXPORT void JNICALL
 Java_com_decode_estimator_PoseEstimatorBridge_nativeAddDistanceMeasurement(
     JNIEnv* env, jclass, jlong handle, jint tag_id, jdouble distance_m,
-    jdouble uncertainty_m, jdouble timestamp) {
+    jdouble turret_yaw_rad, jdouble uncertainty_m, jdouble timestamp) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
         return;
@@ -215,7 +221,11 @@ Java_com_decode_estimator_PoseEstimatorBridge_nativeAddDistanceMeasurement(
     auto* estimator = from_handle(handle);
     try {
         decode::DistanceMeasurement distance{
-            static_cast<int32_t>(tag_id), distance_m, uncertainty_m, timestamp};
+            static_cast<int32_t>(tag_id),
+            distance_m,
+            turret_yaw_rad,
+            uncertainty_m,
+            timestamp};
         estimator->addDistanceMeasurement(distance);
     } catch (const std::exception& e) {
         throw_runtime_exception(env,

@@ -17,6 +17,25 @@ using gtsam::symbol_shorthand::X;
 
 namespace decode {
 
+namespace {
+
+gtsam::Point2 rotatePoint(const gtsam::Point2& point, double angle_rad) {
+    double c = std::cos(angle_rad);
+    double s = std::sin(angle_rad);
+    return gtsam::Point2(c * point.x() - s * point.y(),
+                         s * point.x() + c * point.y());
+}
+
+gtsam::Pose2 cameraPoseFromRobot(const gtsam::Pose2& robot_pose,
+                                 const gtsam::Point2& camera_offset,
+                                 double turret_yaw_rad) {
+    gtsam::Point2 offset_in_robot = rotatePoint(camera_offset, turret_yaw_rad);
+    gtsam::Pose2 turret_to_camera(offset_in_robot.x(), offset_in_robot.y(), turret_yaw_rad);
+    return robot_pose.compose(turret_to_camera);
+}
+
+} // namespace
+
 PoseEstimator::PoseEstimator(const EstimatorConfig& config) : config_(config) {
     createNoiseModels();
     createISAM2();
@@ -267,6 +286,7 @@ PoseEstimate PoseEstimator::update() {
     }
 
     // Process pending distance measurements
+    gtsam::Point2 camera_offset(config_.camera_offset_x, config_.camera_offset_y);
     for (const auto& distance : pending_distances_) {
         auto landmark_opt = landmark_map_.getLandmark(distance.tag_id);
         if (!landmark_opt) {
@@ -279,8 +299,10 @@ PoseEstimate PoseEstimator::update() {
 
         double sigma = (distance.uncertainty_m > 0) ? distance.uncertainty_m
                                                      : config_.default_distance_sigma;
-        double dx = landmark_opt->x() - current_pose_.x();
-        double dy = landmark_opt->y() - current_pose_.y();
+        gtsam::Pose2 camera_pose = cameraPoseFromRobot(current_pose_, camera_offset,
+                                                       distance.turret_yaw_rad);
+        double dx = landmark_opt->x() - camera_pose.x();
+        double dy = landmark_opt->y() - camera_pose.y();
         double predicted_range = std::sqrt(dx * dx + dy * dy);
         double min_sigma = predicted_range * config_.default_bearing_sigma * 3.0;
         if (sigma < min_sigma) {
@@ -294,7 +316,12 @@ PoseEstimate PoseEstimator::update() {
         auto range_noise = gtsam::noiseModel::Isotropic::Sigma(1, sigma);
 
         pending_graph_.add(RangeToKnownLandmarkFactor(
-            X(current_pose_idx_), *landmark_opt, distance.distance_m, range_noise));
+            X(current_pose_idx_),
+            *landmark_opt,
+            camera_offset,
+            distance.turret_yaw_rad,
+            distance.distance_m,
+            range_noise));
 
         // std::cout << "distance tag=" << distance.tag_id
         //           << " pose=(" << current_pose_.x() << ", " << current_pose_.y()
@@ -320,14 +347,21 @@ PoseEstimate PoseEstimator::update() {
 
         // Add bearing factor to current pose
         pending_graph_.add(BearingToKnownLandmarkFactor(
-            X(current_pose_idx_), *landmark_opt, bearing.bearing_rad, bearing_noise));
+            X(current_pose_idx_),
+            *landmark_opt,
+            camera_offset,
+            bearing.turret_yaw_rad,
+            bearing.bearing_rad,
+            bearing_noise));
 
 #if DECODE_ENABLE_RERUN
         if (visualizer_) {
             PoseEstimate est;
-            est.x = current_pose_.x();
-            est.y = current_pose_.y();
-            est.theta = current_pose_.theta();
+            gtsam::Pose2 camera_pose = cameraPoseFromRobot(current_pose_, camera_offset,
+                                                           bearing.turret_yaw_rad);
+            est.x = camera_pose.x();
+            est.y = camera_pose.y();
+            est.theta = camera_pose.theta();
             est.timestamp = current_timestamp_;
             est.has_covariance = false;
             visualizer_->logBearingMeasurement(est, *landmark_opt, bearing.tag_id,

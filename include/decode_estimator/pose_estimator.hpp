@@ -41,6 +41,10 @@ struct EstimatorConfig {
     /// Default distance uncertainty if not provided per measurement (meters)
     double default_distance_sigma = 0.2;
 
+    /// Camera offset in turret frame (meters)
+    double camera_offset_x = 0.0;
+    double camera_offset_y = 0.0;
+
     // Visualization
     bool enable_visualization = false;
     std::string visualization_app_id = "decode_estimator";
@@ -92,7 +96,7 @@ public:
 
     /**
      * @brief Add a bearing measurement for the next update
-     * @param bearing  Bearing measurement to known AprilTag
+     * @param bearing  Bearing measurement to known AprilTag (camera frame)
      */
     void addBearingMeasurement(const BearingMeasurement& bearing);
 
@@ -104,7 +108,7 @@ public:
 
     /**
      * @brief Add a distance measurement for the next update
-     * @param distance  Distance measurement to known AprilTag
+     * @param distance  Distance measurement to known AprilTag (camera frame)
      */
     void addDistanceMeasurement(const DistanceMeasurement& distance);
 

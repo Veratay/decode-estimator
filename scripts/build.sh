@@ -5,6 +5,7 @@ build_type="Release"
 enable_rerun="OFF"
 build_tests="OFF"
 build_dir="build"
+build_dir_set="OFF"
 clean_build="OFF"
 build_android="OFF"
 android_abi="arm64-v8a"
@@ -20,7 +21,7 @@ Options:
   --release             Release build (default)
   --rerun               Enable Rerun visualization
   --tests               Build unit tests (host only)
-  --build-dir DIR       Override build directory (default: build)
+  --build-dir DIR       Override build directory (default: build, or build-android with --android)
   --clean               Remove build directory before configuring
   --android             Build for Android using NDK
   --android-abi ABI     Android ABI (default: arm64-v8a)
@@ -47,6 +48,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --build-dir)
             build_dir="$2"
+            build_dir_set="ON"
             shift
             ;;
         --clean)
@@ -54,6 +56,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --android)
             build_android="ON"
+            if [[ "$build_dir_set" == "OFF" ]]; then
+                build_dir="build-android"
+            fi
             ;;
         --android-abi)
             android_abi="$2"

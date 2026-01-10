@@ -217,6 +217,14 @@ if(JNI_FOUND OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR DECODE_BUILD_FOR_ANDROID
             Threads::Threads
     )
 
+    if(DECODE_ENABLE_RERUN)
+        if(TARGET rerun_sdk)
+            target_link_libraries(decode_estimator_jni PUBLIC rerun_sdk)
+        elseif(TARGET rerun::rerun_sdk)
+            target_link_libraries(decode_estimator_jni PUBLIC rerun::rerun_sdk)
+        endif()
+    endif()
+
     if(NOT WIN32)
         target_link_libraries(decode_estimator_jni PRIVATE m dl)
     endif()

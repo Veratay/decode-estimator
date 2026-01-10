@@ -188,6 +188,7 @@ int main() {
                     decode::BearingMeasurement bearing;
                     bearing.tag_id = lm.id;
                     bearing.bearing_rad = measured_bearing;
+                    bearing.turret_yaw_rad = 0.0;
                     bearing.uncertainty_rad = BEARING_NOISE * 1.5;  // Slightly conservative
                     bearing.timestamp = time;
 
@@ -196,6 +197,7 @@ int main() {
                     decode::DistanceMeasurement distance;
                     distance.tag_id = lm.id;
                     distance.distance_m = measured_distance;
+                    distance.turret_yaw_rad = 0.0;
                     distance.uncertainty_m = DISTANCE_NOISE * 1.5;
                     distance.timestamp = time;
 

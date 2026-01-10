@@ -14,18 +14,20 @@ struct OdometryMeasurement {
     double timestamp; ///< Timestamp (seconds)
 };
 
-/// AprilTag bearing measurement in robot frame
+/// AprilTag bearing measurement in camera frame
 struct BearingMeasurement {
     int32_t tag_id;          ///< AprilTag ID
-    double bearing_rad;      ///< Bearing angle in robot frame (radians), 0 = forward
+    double bearing_rad;      ///< Bearing angle in camera frame (radians), 0 = forward
+    double turret_yaw_rad = 0.0; ///< Turret yaw relative to robot (radians)
     double uncertainty_rad;  ///< 1-sigma uncertainty (radians)
     double timestamp;        ///< Timestamp (seconds)
 };
 
-/// AprilTag distance measurement in robot frame
+/// AprilTag distance measurement in camera frame
 struct DistanceMeasurement {
     int32_t tag_id;         ///< AprilTag ID
     double distance_m;      ///< Range to tag (meters)
+    double turret_yaw_rad = 0.0; ///< Turret yaw relative to robot (radians)
     double uncertainty_m;   ///< 1-sigma uncertainty (meters)
     double timestamp;       ///< Timestamp (seconds)
 };

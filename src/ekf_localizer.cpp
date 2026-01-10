@@ -1,5 +1,8 @@
 #include "decode_estimator/ekf_localizer.hpp"
 
+#include <gtsam/geometry/Point2.h>
+#include <gtsam/geometry/Pose2.h>
+
 #include <cmath>
 #include <stdexcept>
 
@@ -15,6 +18,22 @@ double wrapAngle(double angle) {
         angle += 2.0 * M_PI;
     }
     return angle;
+}
+
+gtsam::Point2 rotatePoint(const gtsam::Point2& point, double angle_rad) {
+    double c = std::cos(angle_rad);
+    double s = std::sin(angle_rad);
+    return gtsam::Point2(c * point.x() - s * point.y(),
+                         s * point.x() + c * point.y());
+}
+
+gtsam::Pose2 cameraPoseFromRobot(const Eigen::Vector3d& state,
+                                 const gtsam::Point2& camera_offset,
+                                 double turret_yaw_rad) {
+    gtsam::Pose2 robot_pose(state(0), state(1), state(2));
+    gtsam::Point2 offset_in_robot = rotatePoint(camera_offset, turret_yaw_rad);
+    gtsam::Pose2 turret_to_camera(offset_in_robot.x(), offset_in_robot.y(), turret_yaw_rad);
+    return robot_pose.compose(turret_to_camera);
 }
 
 } // namespace
@@ -135,20 +154,29 @@ void EkfLocalizer::updateBearing(const BearingMeasurement& bearing) {
         return;
     }
 
-    double dx = landmark_opt->x() - state_(0);
-    double dy = landmark_opt->y() - state_(1);
-    double q = dx * dx + dy * dy;
-    if (q < 1e-6) {
-        return;
-    }
+    gtsam::Point2 camera_offset(config_.camera_offset_x, config_.camera_offset_y);
+    auto predicted_bearing = [&](const Eigen::Vector3d& state) {
+        gtsam::Pose2 camera_pose = cameraPoseFromRobot(state, camera_offset,
+                                                       bearing.turret_yaw_rad);
+        double dx = landmark_opt->x() - camera_pose.x();
+        double dy = landmark_opt->y() - camera_pose.y();
+        return wrapAngle(std::atan2(dy, dx) - camera_pose.theta());
+    };
 
-    double predicted = wrapAngle(std::atan2(dy, dx) - state_(2));
+    double predicted = predicted_bearing(state_);
     double residual = wrapAngle(bearing.bearing_rad - predicted);
     double sigma = (bearing.uncertainty_rad > 0.0) ? bearing.uncertainty_rad
                                                    : config_.default_bearing_sigma;
 
+    const double eps = 1e-6;
     Eigen::RowVector3d H;
-    H << dy / q, -dx / q, -1.0;
+    for (int i = 0; i < 3; ++i) {
+        Eigen::Vector3d perturbed = state_;
+        perturbed(i) += eps;
+        double predicted_perturbed = predicted_bearing(perturbed);
+        double diff = wrapAngle(predicted_perturbed - predicted);
+        H(i) = diff / eps;
+    }
 
     double S = (H * covariance_ * H.transpose())(0, 0) + sigma * sigma;
     if (S < 1e-9) {
@@ -174,9 +202,16 @@ void EkfLocalizer::updateDistance(const DistanceMeasurement& distance) {
         return;
     }
 
-    double dx = landmark_opt->x() - state_(0);
-    double dy = landmark_opt->y() - state_(1);
-    double range = std::sqrt(dx * dx + dy * dy);
+    gtsam::Point2 camera_offset(config_.camera_offset_x, config_.camera_offset_y);
+    auto predicted_range = [&](const Eigen::Vector3d& state) {
+        gtsam::Pose2 camera_pose = cameraPoseFromRobot(state, camera_offset,
+                                                       distance.turret_yaw_rad);
+        double dx = landmark_opt->x() - camera_pose.x();
+        double dy = landmark_opt->y() - camera_pose.y();
+        return std::sqrt(dx * dx + dy * dy);
+    };
+
+    double range = predicted_range(state_);
     if (range < 1e-6) {
         return;
     }
@@ -185,8 +220,14 @@ void EkfLocalizer::updateDistance(const DistanceMeasurement& distance) {
     double sigma = (distance.uncertainty_m > 0.0) ? distance.uncertainty_m
                                                   : config_.default_distance_sigma;
 
+    const double eps = 1e-6;
     Eigen::RowVector3d H;
-    H << -dx / range, -dy / range, 0.0;
+    for (int i = 0; i < 3; ++i) {
+        Eigen::Vector3d perturbed = state_;
+        perturbed(i) += eps;
+        double range_perturbed = predicted_range(perturbed);
+        H(i) = (range_perturbed - range) / eps;
+    }
 
     double S = (H * covariance_ * H.transpose())(0, 0) + sigma * sigma;
     if (S < 1e-9) {

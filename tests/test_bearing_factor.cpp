@@ -89,7 +89,7 @@ TEST(BearingToKnownLandmarkFactor, Jacobian) {
 
     // Compute analytical Jacobian
     Matrix H_analytical;
-    factor.evaluateError(pose, H_analytical);
+    factor.evaluateError(pose, &H_analytical);
 
     // Compute numerical Jacobian
     auto errorFunc = [&factor](const Pose2& p) {

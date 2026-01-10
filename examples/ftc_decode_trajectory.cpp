@@ -28,6 +28,8 @@ constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
 constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
 constexpr double BEARING_NOISE = 0.025;     // radians (~1.4 degrees)
 constexpr double DISTANCE_NOISE = 0.12;     // meters (less confident than bearing)
+constexpr double TURRET_YAW_AMPLITUDE = 0.8; // radians
+constexpr double TURRET_YAW_RATE = 0.6;      // rad/s
 
 // Detection parameters
 constexpr double DETECTION_RANGE = 3.0;     // meters
@@ -206,17 +208,21 @@ int main() {
         estimator.processOdometry(odom);
         ekf.processOdometry(odom);
 
+        double turret_yaw = TURRET_YAW_AMPLITUDE * std::sin(TURRET_YAW_RATE * time);
+
         if (i % DETECTION_INTERVAL == 0) {
             for (const auto& lm : landmarks) {
                 double dist = computeDistance(true_x, true_y, lm.x, lm.y);
                 if (dist < DETECTION_RANGE) {
                     double true_bearing = computeBearing(true_x, true_y, true_theta, lm.x, lm.y);
-                    double measured_bearing = true_bearing + bearing_noise(gen);
+                    double turret_bearing = wrapAngle(true_bearing - turret_yaw);
+                    double measured_bearing = turret_bearing + bearing_noise(gen);
                     double measured_distance = dist + distance_noise(gen);
 
                     decode::BearingMeasurement bearing;
                     bearing.tag_id = lm.id;
                     bearing.bearing_rad = measured_bearing;
+                    bearing.turret_yaw_rad = turret_yaw;
                     bearing.uncertainty_rad = BEARING_NOISE * 1.5;
                     bearing.timestamp = time;
 
@@ -226,6 +232,7 @@ int main() {
                     decode::DistanceMeasurement distance;
                     distance.tag_id = lm.id;
                     distance.distance_m = measured_distance;
+                    distance.turret_yaw_rad = turret_yaw;
                     distance.uncertainty_m = DISTANCE_NOISE * 1.5;
                     distance.timestamp = time;
 

@@ -111,7 +111,9 @@ long handle = bridge.nativeCreateWithConfig(
     0.02,  // odom_sigma_xy (m)
     0.01,  // odom_sigma_theta (rad)
     0.05,  // default_bearing_sigma (rad, ~3 degrees)
-    0.2    // default_distance_sigma (m)
+    0.2,   // default_distance_sigma (m)
+    0.0,   // camera_offset_x (m, turret frame)
+    0.0    // camera_offset_y (m, turret frame)
 );
 
 // Initialize with landmarks
@@ -124,10 +126,10 @@ bridge.nativeInitialize(handle, tagIds, landmarkX, landmarkY, 0.0, 0.0, 0.0);
 bridge.nativeProcessOdometry(handle, dx, dy, dtheta, timestamp);
 
 // Add bearing measurement
-bridge.nativeAddBearingMeasurement(handle, tagId, bearing, uncertainty, timestamp);
+bridge.nativeAddBearingMeasurement(handle, tagId, bearing, turretYaw, uncertainty, timestamp);
 
 // Add distance measurement (optional)
-bridge.nativeAddDistanceMeasurement(handle, tagId, distance, uncertainty, timestamp);
+bridge.nativeAddDistanceMeasurement(handle, tagId, distance, turretYaw, uncertainty, timestamp);
 
 // Update and get pose
 bridge.nativeUpdate(handle);
@@ -149,6 +151,7 @@ bridge.nativeDestroy(handle);
 - `odom_sigma_theta`: Odometry heading noise per update (typical: 0.01rad ≈ 0.6°)
 - `default_bearing_sigma`: Bearing measurement uncertainty (typical: 0.05rad ≈ 3°)
 - `default_distance_sigma`: Distance measurement uncertainty (typical: 0.2m = 20cm)
+- `camera_offset_x`, `camera_offset_y`: Camera offset in turret frame (meters)
 
 Tune these based on your sensor characteristics and testing.
 
@@ -198,7 +201,8 @@ while (running) {
     for (const auto& detection : get_apriltag_detections()) {
         decode::BearingMeasurement bearing;
         bearing.tag_id = detection.id;
-        bearing.bearing_rad = detection.bearing;  // In robot frame
+        bearing.bearing_rad = detection.bearing;  // In camera frame
+        bearing.turret_yaw_rad = get_turret_yaw();
         bearing.uncertainty_rad = detection.uncertainty;
         bearing.timestamp = get_timestamp();
 
@@ -225,6 +229,9 @@ while (running) {
 | `odom_sigma_xy` | 0.02 | Odometry position noise per step (m) |
 | `odom_sigma_theta` | 0.01 | Odometry heading noise per step (rad) |
 | `default_bearing_sigma` | 0.05 | Default bearing uncertainty (rad) |
+| `default_distance_sigma` | 0.2 | Default distance uncertainty (m) |
+| `camera_offset_x` | 0.0 | Camera offset X in turret frame (m) |
+| `camera_offset_y` | 0.0 | Camera offset Y in turret frame (m) |
 | `enable_visualization` | false | Enable Rerun visualization |
 
 #### PoseEstimator Methods

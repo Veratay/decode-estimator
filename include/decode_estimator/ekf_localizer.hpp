@@ -18,6 +18,8 @@ struct EKFConfig {
     double odom_sigma_theta = 0.01;
     double default_bearing_sigma = 0.05;
     double default_distance_sigma = 0.2;
+    double camera_offset_x = 0.0;
+    double camera_offset_y = 0.0;
 };
 
 class EkfLocalizer {
