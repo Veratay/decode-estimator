@@ -54,6 +54,11 @@ struct EstimatorConfig {
     double min_tag_area_px = 50.0;
     double max_tag_view_angle_deg = 60.0;
 
+    /// Cheirality check (penalize tags behind camera)
+    bool enable_cheirality_check = true;
+    double cheirality_sigma = 0.1;
+    double min_tag_z_distance = 0.1;
+
     /// Post-process estimates after vision gap resets
     bool enable_post_process = true;
     double post_process_vision_gap_s = 0.4;

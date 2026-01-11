@@ -83,6 +83,7 @@ Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
     jboolean compact_odometry,
     jboolean enable_robust_tag_loss, jint robust_tag_loss, jdouble robust_tag_loss_k,
     jboolean enable_tag_gating, jdouble min_tag_area_px, jdouble max_tag_view_angle_deg,
+    jboolean enable_cheirality_check, jdouble cheirality_sigma, jdouble min_tag_z_distance,
     jboolean enable_post_process, jdouble post_process_vision_gap_s,
     jdouble post_process_settle_s, jint post_process_settle_updates,
     jdouble fx, jdouble fy, jdouble cx, jdouble cy,
@@ -105,6 +106,9 @@ Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
         config.enable_tag_gating = (enable_tag_gating == JNI_TRUE);
         config.min_tag_area_px = min_tag_area_px;
         config.max_tag_view_angle_deg = max_tag_view_angle_deg;
+        config.enable_cheirality_check = (enable_cheirality_check == JNI_TRUE);
+        config.cheirality_sigma = cheirality_sigma;
+        config.min_tag_z_distance = min_tag_z_distance;
         config.enable_post_process = (enable_post_process == JNI_TRUE);
         config.post_process_vision_gap_s = post_process_vision_gap_s;
         config.post_process_settle_s = post_process_settle_s;

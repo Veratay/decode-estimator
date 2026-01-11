@@ -1,5 +1,6 @@
 #include "decode_estimator/pose_estimator.hpp"
 #include "decode_estimator/tag_projection_factor.hpp"
+#include "decode_estimator/cheirality_factor.hpp"
 #include "decode_estimator/visualization.hpp"
 #include "decode_estimator/camera_model.hpp"
 
@@ -628,6 +629,18 @@ PoseEstimate PoseEstimator::update() {
                 tag.corners,
                 pixel_noise
             ));
+
+            if (config_.enable_cheirality_check) {
+                auto cheirality_noise = gtsam::noiseModel::Isotropic::Sigma(1, config_.cheirality_sigma);
+                pending_graph_.add(CheiralityFactor(
+                    X(current_pose_idx_),
+                    tag_pose_world,
+                    extrinsics,
+                    tag.turret_yaw_rad,
+                    cheirality_noise,
+                    config_.min_tag_z_distance
+                ));
+            }
 
     }
     pending_tags_.clear();
