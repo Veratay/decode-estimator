@@ -39,6 +39,29 @@ struct PoseEstimate {
     bool has_covariance; ///< Whether covariance is valid
 };
 
+/// Process memory usage snapshot (bytes)
+struct MemoryUsage {
+    uint64_t virtual_bytes = 0;
+    uint64_t resident_bytes = 0;
+    uint64_t shared_bytes = 0;
+    uint64_t data_bytes = 0;
+    bool valid = false;
+};
+
+/// Diagnostic counters and timings (milliseconds)
+struct DiagnosticsSnapshot {
+    size_t pending_tags = 0;
+    size_t pending_graph_factors = 0;
+    size_t pending_values = 0;
+    size_t current_pose_index = 0;
+    size_t horizon_capacity = 0;
+    double last_solve_ms = 0.0;
+    double avg_solve_ms = 0.0;
+    double last_horizon_reset_ms = 0.0;
+    double last_horizon_cov_ms = 0.0;
+    size_t last_horizon_reset_pose_index = 0;
+};
+
 /// AprilTag landmark definition
 struct Landmark {
     int32_t id; ///< AprilTag ID

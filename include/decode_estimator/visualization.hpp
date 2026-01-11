@@ -6,6 +6,7 @@
 
 #include <gtsam/geometry/Point2.h>
 #include <gtsam/geometry/Point3.h>
+#include <gtsam/geometry/Pose2.h>
 #include <gtsam/geometry/Pose3.h>
 
 #include <cstdint>
@@ -19,6 +20,14 @@
 
 namespace decode {
 
+struct VisualizationConfig {
+    bool enabled = false;
+    bool stream_to_viewer = true;
+    std::string stream_url = "rerun://localhost:9876";
+    std::string save_path = "";
+    std::string app_id = "decode_estimator";
+};
+
 #if DECODE_ENABLE_RERUN
 
 /**
@@ -30,7 +39,13 @@ namespace decode {
 class Visualizer {
 public:
     explicit Visualizer(const std::string& app_id);
+    explicit Visualizer(const VisualizationConfig& config);
     ~Visualizer();
+
+    void setEnabled(bool enabled);
+    bool isEnabled() const;
+    void configure(const VisualizationConfig& config);
+    void flush();
 
     /// Log landmark positions (call once at initialization)
     void logLandmarks(const LandmarkMap& landmarks);
@@ -76,11 +91,21 @@ public:
                           const gtsam::Pose3& camera_pose,
                           const std::vector<gtsam::Point3>& corners_world);
 
+    void logTagCornerComparison(int32_t tag_id,
+        const std::vector<std::pair<double,double>>& detected_px,
+        const std::vector<std::pair<double,double>>& predicted_px);
+    
+    void logOdometryDelta(const gtsam::Pose2& delta, double timestamp);
+    
+    void logCoordinateFrames(const gtsam::Pose2& robot_pose,
+        double turret_yaw, const gtsam::Pose3& camera_extrinsics);
+
     /// Log uncertainty ellipse at current pose
     void logUncertaintyEllipse(const PoseEstimate& pose, size_t pose_idx);
 
 private:
     rerun::RecordingStream rec_;
+    bool enabled_ = true;
     std::vector<rerun::Position3D> estimate_path_;
     std::vector<rerun::Position3D> true_path_;
     std::vector<rerun::Position3D> ekf_path_;
@@ -99,7 +124,13 @@ private:
 class Visualizer {
 public:
     explicit Visualizer(const std::string& /*app_id*/) {}
+    explicit Visualizer(const VisualizationConfig& /*config*/) {}
     ~Visualizer() = default;
+
+    void setEnabled(bool /*enabled*/) {}
+    bool isEnabled() const { return false; }
+    void configure(const VisualizationConfig& /*config*/) {}
+    void flush() {}
 
     void logLandmarks(const LandmarkMap& /*landmarks*/) {}
     void logPose(const PoseEstimate& /*pose*/, size_t /*pose_idx*/) {}
@@ -129,6 +160,12 @@ public:
     void logTagCornerRays(int32_t /*tag_id*/,
                           const gtsam::Pose3& /*camera_pose*/,
                           const std::vector<gtsam::Point3>& /*corners_world*/) {}
+    void logTagCornerComparison(int32_t /*tag_id*/,
+        const std::vector<std::pair<double,double>>& /*detected_px*/,
+        const std::vector<std::pair<double,double>>& /*predicted_px*/) {}
+    void logOdometryDelta(const gtsam::Pose2& /*delta*/, double /*timestamp*/) {}
+    void logCoordinateFrames(const gtsam::Pose2& /*robot_pose*/,
+        double /*turret_yaw*/, const gtsam::Pose3& /*camera_extrinsics*/) {}
     void logUncertaintyEllipse(const PoseEstimate& /*pose*/, size_t /*pose_idx*/) {}
 };
 

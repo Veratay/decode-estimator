@@ -9,13 +9,50 @@
 namespace decode {
 
 Visualizer::Visualizer(const std::string &app_id) : rec_(app_id) {
-  // Spawn the Rerun viewer
+  // Default behavior for backward compatibility
   rec_.spawn().exit_on_failure();
+}
+
+Visualizer::Visualizer(const VisualizationConfig& config) : rec_(config.app_id) {
+    configure(config);
 }
 
 Visualizer::~Visualizer() = default;
 
+void Visualizer::setEnabled(bool enabled) {
+    enabled_ = enabled;
+}
+
+bool Visualizer::isEnabled() const {
+    return enabled_;
+}
+
+void Visualizer::configure(const VisualizationConfig& config) {
+    enabled_ = config.enabled;
+    if (!enabled_) return;
+
+    if (config.stream_to_viewer) {
+        // connect_grpc is the correct method in newer SDKs
+        // ignore error for now or log it if we had a logger
+        (void)rec_.connect_grpc(config.stream_url); 
+    } else if (!config.save_path.empty()) {
+        (void)rec_.save(config.save_path);
+    } else {
+        // Fallback to spawn if no path/url (mostly for desktop testing)
+        (void)rec_.spawn();
+    }
+}
+
+void Visualizer::flush() {
+    // Rerun SDK handles flushing automatically, but we can force it if needed
+    // currently rec_.flush() is not exposed in C++ SDK 0.15 directly on RecordingStream in the same way,
+    // but the destructor handles it.
+    // However, if there's a specific flush mechanism needed we can add it.
+    // For now, no-op or rely on SDK defaults.
+}
+
 void Visualizer::logLandmarks(const LandmarkMap &landmarks) {
+  if (!enabled_) return;
   std::vector<rerun::Position3D> positions;
   std::vector<std::string> labels;
 
@@ -29,11 +66,13 @@ void Visualizer::logLandmarks(const LandmarkMap &landmarks) {
     rec_.log_static("world/landmarks",
                     rerun::Points3D(positions)
                         .with_colors({rerun::Color(255, 165, 0)}) // Orange
-                        .with_radii({0.1f}));
+                        .with_radii({0.1f})
+                        .with_labels(labels));
   }
 }
 
 void Visualizer::logPose(const PoseEstimate &pose, size_t pose_idx) {
+  if (!enabled_) return;
   rec_.log("world/robot",
            rerun::Transform3D::from_translation_rotation(
                {static_cast<float>(pose.x), static_cast<float>(pose.y), 0.0f},
@@ -82,7 +121,7 @@ void Visualizer::logPose(const PoseEstimate &pose, size_t pose_idx) {
 }
 
 void Visualizer::logTrajectory(const std::vector<PoseEstimate> &trajectory) {
-  if (trajectory.empty()) {
+  if (!enabled_ || trajectory.empty()) {
     return;
   }
 
@@ -101,6 +140,7 @@ void Visualizer::logTrajectory(const std::vector<PoseEstimate> &trajectory) {
 void Visualizer::logBearingMeasurement(const PoseEstimate &pose,
                                        const gtsam::Point2 &landmark,
                                        int32_t tag_id, double bearing_rad) {
+  if (!enabled_) return;
   (void)landmark;
 
   // Draw a fixed-length ray from the robot in the measured bearing direction.
@@ -119,6 +159,7 @@ void Visualizer::logBearingMeasurement(const PoseEstimate &pose,
 void Visualizer::logLandmarkRays(
     const LandmarkMap &landmarks, const PoseEstimate &pose, int64_t step,
     const std::unordered_set<int32_t> &visible_tags) {
+  if (!enabled_) return;
   (void)visible_tags;
   rec_.set_time_sequence("step", step);
   for (const auto &[id, point] : landmarks.getAllLandmarks()) {
@@ -139,6 +180,8 @@ void Visualizer::logTimeSeriesMetrics(
     const PoseEstimate &post_estimate, const PoseEstimate &post_ekf,
     double position_error, double odom_error, double ekf_error,
     double post_position_error, double post_ekf_error) {
+  
+  if (!enabled_) return;
   rec_.set_time_sequence("step", step);
 
   if (step == 0) {
@@ -259,10 +302,11 @@ void Visualizer::logTimeSeriesMetrics(
 
 void Visualizer::logCamera(const gtsam::Pose3 &camera_pose,
                            const CameraModel &intrinsics) {
+  if (!enabled_) return;
   auto axis_angle = camera_pose.rotation().axisAngle();
   gtsam::Point3 axis = axis_angle.first.point3();
 
-  rec_.log("world/camera",
+  rec_.log("world/robot/turret/camera",
            rerun::Transform3D::from_translation_rotation(
                {static_cast<float>(camera_pose.x()),
                 static_cast<float>(camera_pose.y()),
@@ -279,7 +323,7 @@ void Visualizer::logCamera(const gtsam::Pose3 &camera_pose,
   float height =
       static_cast<float>(std::max(1.0, intrinsics.cy * 2.0));
 
-  rec_.log("world/camera",
+  rec_.log("world/robot/turret/camera/frustum",
            rerun::Pinhole::from_focal_length_and_resolution(
                {static_cast<float>(intrinsics.fx),
                 static_cast<float>(intrinsics.fy)},
@@ -289,7 +333,7 @@ void Visualizer::logCamera(const gtsam::Pose3 &camera_pose,
 void Visualizer::logTagCornerRays(
     int32_t tag_id, const gtsam::Pose3 &camera_pose,
     const std::vector<gtsam::Point3> &corners_world) {
-  if (corners_world.empty()) {
+  if (!enabled_ || corners_world.empty()) {
     return;
   }
 
@@ -313,9 +357,90 @@ void Visualizer::logTagCornerRays(
                .with_radii({0.02f}));
 }
 
+void Visualizer::logTagCornerComparison(int32_t tag_id,
+    const std::vector<std::pair<double,double>>& detected_px,
+    const std::vector<std::pair<double,double>>& predicted_px) {
+    if (!enabled_) return;
+
+    std::vector<rerun::Position2D> det_points;
+    for(const auto& p : detected_px) det_points.push_back({(float)p.first, (float)p.second});
+    rec_.log("world/measurements/tag_" + std::to_string(tag_id) + "/detected_corners",
+        rerun::Points2D(det_points).with_colors({rerun::Color(0, 255, 0)}));
+
+    std::vector<rerun::Position2D> pred_points;
+    for(const auto& p : predicted_px) pred_points.push_back({(float)p.first, (float)p.second});
+    rec_.log("world/measurements/tag_" + std::to_string(tag_id) + "/predicted_corners",
+        rerun::Points2D(pred_points).with_colors({rerun::Color(255, 0, 0)}));
+
+    // Draw lines between corresponding corners
+    if (detected_px.size() == predicted_px.size()) {
+        std::vector<std::vector<rerun::Position2D>> lines;
+        for (size_t i = 0; i < detected_px.size(); ++i) {
+            lines.push_back({
+                {(float)detected_px[i].first, (float)detected_px[i].second},
+                {(float)predicted_px[i].first, (float)predicted_px[i].second}
+            });
+        }
+        rec_.log("world/measurements/tag_" + std::to_string(tag_id) + "/reprojection_error",
+            rerun::LineStrips2D(lines).with_colors({rerun::Color(255, 255, 0)}));
+    }
+}
+
+void Visualizer::logOdometryDelta(const gtsam::Pose2& delta, double timestamp) {
+    if (!enabled_) return;
+    (void)timestamp;
+    // Log as arrow at origin? Or accum? 
+    // Just logging magnitude/direction as vector at origin for debug
+     rec_.log("world/measurements/odometry_deltas",
+           rerun::Arrows3D::from_vectors(
+               {{static_cast<float>(delta.x()), static_cast<float>(delta.y()), 0.0f}})
+               .with_origins({{0.0f, 0.0f, 0.0f}})
+               .with_colors({rerun::Color(255, 165, 0)})); // Orange
+}
+
+void Visualizer::logCoordinateFrames(const gtsam::Pose2& robot_pose,
+        double turret_yaw, const gtsam::Pose3& camera_extrinsics) {
+    if (!enabled_) return;
+    
+    // Robot Frame
+    rec_.log("world/robot",
+           rerun::Transform3D::from_translation_rotation(
+               {static_cast<float>(robot_pose.x()), static_cast<float>(robot_pose.y()), 0.0f},
+               rerun::Rotation3D(rerun::datatypes::RotationAxisAngle(
+                   rerun::datatypes::Vec3D{0.0f, 0.0f, 1.0f},
+                   rerun::datatypes::Angle::radians(
+                       static_cast<float>(robot_pose.theta()))))));
+                       
+    // Turret Frame (relative to robot)
+    rec_.log("world/robot/turret",
+           rerun::Transform3D::from_translation_rotation(
+               {0.0f, 0.0f, 0.0f},
+               rerun::Rotation3D(rerun::datatypes::RotationAxisAngle(
+                   rerun::datatypes::Vec3D{0.0f, 0.0f, 1.0f},
+                   rerun::datatypes::Angle::radians(
+                       static_cast<float>(turret_yaw))))));
+
+     // Camera Frame (relative to turret)
+     // Extract rotation axis/angle from extrinsics
+     auto axis_angle = camera_extrinsics.rotation().axisAngle();
+     gtsam::Point3 axis = axis_angle.first.point3();
+     
+     rec_.log("world/robot/turret/camera",
+           rerun::Transform3D::from_translation_rotation(
+               {static_cast<float>(camera_extrinsics.x()), 
+                static_cast<float>(camera_extrinsics.y()), 
+                static_cast<float>(camera_extrinsics.z())},
+               rerun::Rotation3D(rerun::datatypes::RotationAxisAngle(
+                   rerun::datatypes::Vec3D{static_cast<float>(axis.x()),
+                                           static_cast<float>(axis.y()),
+                                           static_cast<float>(axis.z())},
+                   rerun::datatypes::Angle::radians(
+                       static_cast<float>(axis_angle.second))))));
+}
+
 void Visualizer::logUncertaintyEllipse(const PoseEstimate &pose,
                                        size_t /*pose_idx*/) {
-  if (!pose.has_covariance) {
+  if (!enabled_ || !pose.has_covariance) {
     return;
   }
 

@@ -13,9 +13,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <limits>
 #include <iostream>
 #include <stdexcept>
+
+#include <unistd.h>
 
 // Use symbol shorthand for poses
 using gtsam::symbol_shorthand::X;
@@ -23,6 +26,37 @@ using gtsam::symbol_shorthand::X;
 namespace decode {
 
 namespace {
+
+MemoryUsage readMemoryUsage() {
+    MemoryUsage usage;
+    std::ifstream statm("/proc/self/statm");
+    if (!statm.is_open()) {
+        return usage;
+    }
+
+    uint64_t size = 0;
+    uint64_t resident = 0;
+    uint64_t shared = 0;
+    uint64_t text = 0;
+    uint64_t lib = 0;
+    uint64_t data = 0;
+    uint64_t dt = 0;
+    if (!(statm >> size >> resident >> shared >> text >> lib >> data >> dt)) {
+        return usage;
+    }
+
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        return usage;
+    }
+
+    usage.virtual_bytes = size * static_cast<uint64_t>(page_size);
+    usage.resident_bytes = resident * static_cast<uint64_t>(page_size);
+    usage.shared_bytes = shared * static_cast<uint64_t>(page_size);
+    usage.data_bytes = data * static_cast<uint64_t>(page_size);
+    usage.valid = true;
+    return usage;
+}
 
 double quadArea(const std::vector<std::pair<double, double>>& corners) {
     if (corners.size() != 4) {
@@ -56,13 +90,101 @@ PoseEstimator::PoseEstimator(const EstimatorConfig& config) : config_(config) {
     createISAM2();
 
 #if DECODE_ENABLE_RERUN
-    if (config_.enable_visualization) {
-        visualizer_ = std::make_unique<Visualizer>(config_.visualization_app_id);
-    }
+    visualizer_ = std::make_unique<Visualizer>(config_.visualization_app_id);
+    VisualizationConfig viz_config;
+    viz_config.enabled = config_.enable_visualization;
+    viz_config.app_id = config_.visualization_app_id;
+    // Defaults for now, can be overridden by configureVisualization
+    viz_config.stream_to_viewer = true; 
+    visualizer_->configure(viz_config);
 #endif
 }
 
 PoseEstimator::~PoseEstimator() = default;
+
+void PoseEstimator::enableVisualization(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+#if DECODE_ENABLE_RERUN
+    if (visualizer_) {
+        visualizer_->setEnabled(enabled);
+    }
+#else
+    (void)enabled;
+#endif
+}
+
+void PoseEstimator::configureVisualization(bool stream, const std::string& url_or_path, const std::string& app_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+#if DECODE_ENABLE_RERUN
+    if (visualizer_) {
+        VisualizationConfig config;
+        config.enabled = visualizer_->isEnabled(); // Preserve enabled state
+        config.stream_to_viewer = stream;
+        config.app_id = app_id;
+        if (stream) {
+            config.stream_url = url_or_path;
+        } else {
+            config.save_path = url_or_path;
+        }
+        visualizer_->configure(config);
+        
+        // Re-log landmarks if initialized
+        if (initialized_) {
+            visualizer_->logLandmarks(landmark_map_);
+        }
+    }
+#else
+    (void)stream;
+    (void)url_or_path;
+    (void)app_id;
+#endif
+}
+
+void PoseEstimator::flushVisualization() {
+    std::lock_guard<std::mutex> lock(mutex_);
+#if DECODE_ENABLE_RERUN
+    if (visualizer_) {
+        visualizer_->flush();
+    }
+#endif
+}
+
+std::vector<std::pair<double,double>> PoseEstimator::getPredictedCorners(int32_t tag_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) return {};
+    
+    auto landmark_opt = landmark_map_.getLandmark(tag_id);
+    if (!landmark_opt) return {};
+    
+    gtsam::Pose3 camera_pose = getCurrentCameraPose();
+    CameraModel intrinsics; // Use stored config
+    intrinsics.fx = config_.fx; intrinsics.fy = config_.fy;
+    intrinsics.cx = config_.cx; intrinsics.cy = config_.cy;
+    // ... distortion params ...
+    
+    // Landmark pose
+    gtsam::Pose3 tag_pose_world(
+        gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
+        gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
+    );
+    
+    double s = landmark_opt->size / 2.0;
+    const std::array<gtsam::Point3, 4> corners_local = {
+        gtsam::Point3(-s, -s, 0.0), gtsam::Point3( s, -s, 0.0),
+        gtsam::Point3( s,  s, 0.0), gtsam::Point3(-s,  s, 0.0),
+    };
+
+    std::vector<std::pair<double,double>> projected;
+    for (const auto& corner : corners_local) {
+        gtsam::Point2 px;
+        if (projectPoint(camera_pose, intrinsics, tag_pose_world.transformFrom(corner), &px)) {
+            projected.push_back({px.x(), px.y()});
+        } else {
+             projected.push_back({-1, -1}); // Indicator of failure
+        }
+    }
+    return projected;
+}
 
 void PoseEstimator::createNoiseModels() {
     // Prior noise (tight for known initial position)
@@ -202,6 +324,12 @@ PoseEstimate PoseEstimator::processOdometry(const OdometryMeasurement& odom) {
     // Create relative pose from odometry (in robot body frame)
     gtsam::Pose2 delta(odom.dx, odom.dy, odom.dtheta);
 
+#if DECODE_ENABLE_RERUN
+    if (visualizer_) {
+        visualizer_->logOdometryDelta(delta, odom.timestamp);
+    }
+#endif
+
     if (config_.compact_odometry) {
         pending_odom_delta_ = pending_odom_delta_.compose(delta);
         pending_odom_steps_++;
@@ -302,21 +430,32 @@ PoseEstimate PoseEstimator::update() {
             visualizer_->logPose(estimate, current_pose_idx_);
         }
 #endif
+        recordMemoryUsageLocked();
         return estimate;
     }
 
     if (config_.compact_odometry && pending_odom_steps_ > 0) {
         if (current_pose_idx_ + 1 >= kHorizonCapacity) {
+            auto reset_start = std::chrono::steady_clock::now();
             gtsam::SharedNoiseModel prior_noise = prior_noise_;
             try {
+                auto cov_start = std::chrono::steady_clock::now();
                 gtsam::Values estimate = isam2_->calculateEstimate();
                 gtsam::Marginals marginals(isam2_->getFactorsUnsafe(), estimate);
                 gtsam::Matrix33 cov = marginals.marginalCovariance(X(current_pose_idx_));
                 prior_noise = gtsam::noiseModel::Gaussian::Covariance(cov);
+                auto cov_end = std::chrono::steady_clock::now();
+                last_horizon_cov_ms_ =
+                    std::chrono::duration<double, std::milli>(cov_end - cov_start).count();
             } catch (...) {
                 prior_noise = prior_noise_;
+                last_horizon_cov_ms_ = 0.0;
             }
             resetHorizonWithPrior(last_solved_pose_, prior_noise);
+            auto reset_end = std::chrono::steady_clock::now();
+            last_horizon_reset_ms_ =
+                std::chrono::duration<double, std::milli>(reset_end - reset_start).count();
+            last_horizon_reset_pose_index_ = current_pose_idx_;
         }
 
         size_t prev_idx = current_pose_idx_;
@@ -413,7 +552,7 @@ PoseEstimate PoseEstimator::update() {
             );
 
 #if DECODE_ENABLE_RERUN
-            if (visualizer_) {
+            if (visualizer_ && visualizer_->isEnabled()) {
                 double s = landmark_opt->size / 2.0;
                 const std::array<gtsam::Point3, 4> corners_local = {
                     gtsam::Point3(-s, -s, 0.0),
@@ -424,12 +563,28 @@ PoseEstimate PoseEstimator::update() {
 
                 std::vector<gtsam::Point3> corners_world;
                 corners_world.reserve(corners_local.size());
+                std::vector<std::pair<double,double>> predicted_px;
+
                 for (const auto& corner : corners_local) {
-                    corners_world.push_back(tag_pose_world.transformFrom(corner));
+                    gtsam::Point3 world_pt = tag_pose_world.transformFrom(corner);
+                    corners_world.push_back(world_pt);
+                    
+                    gtsam::Point2 px;
+                    if (projectPoint(camera_pose, intrinsics, world_pt, &px)) {
+                        predicted_px.push_back({px.x(), px.y()});
+                    } else {
+                        predicted_px.push_back({0,0}); 
+                    }
                 }
 
                 visualizer_->logCamera(camera_pose, intrinsics);
                 visualizer_->logTagCornerRays(tag.tag_id, camera_pose, corners_world);
+                
+                // Log comparison
+                visualizer_->logTagCornerComparison(tag.tag_id, tag.corners, predicted_px);
+                
+                // Log frames
+                visualizer_->logCoordinateFrames(current_pose_, tag.turret_yaw_rad, extrinsics);
             }
 #endif
 
@@ -545,6 +700,7 @@ PoseEstimate PoseEstimator::update() {
     }
 #endif
 
+    recordMemoryUsageLocked();
     return result;
 }
 
@@ -709,6 +865,29 @@ double PoseEstimator::getAverageSolveTimeMs() const {
                             : 0.0;
 }
 
+MemoryUsage PoseEstimator::getLastMemoryUsage() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_memory_usage_;
+}
+
+DiagnosticsSnapshot PoseEstimator::getDiagnosticsSnapshot() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    DiagnosticsSnapshot snapshot;
+    snapshot.pending_tags = pending_tags_.size();
+    snapshot.pending_graph_factors = pending_graph_.size();
+    snapshot.pending_values = pending_values_.size();
+    snapshot.current_pose_index = current_pose_idx_;
+    snapshot.horizon_capacity = kHorizonCapacity;
+    snapshot.last_solve_ms = last_solve_ms_;
+    snapshot.avg_solve_ms = solve_count_ > 0
+        ? (total_solve_ms_ / static_cast<double>(solve_count_))
+        : 0.0;
+    snapshot.last_horizon_reset_ms = last_horizon_reset_ms_;
+    snapshot.last_horizon_cov_ms = last_horizon_cov_ms_;
+    snapshot.last_horizon_reset_pose_index = last_horizon_reset_pose_index_;
+    return snapshot;
+}
+
 const LandmarkMap& PoseEstimator::getLandmarkMap() const {
     // No lock needed - landmark map is only modified in initialize()
     return landmark_map_;
@@ -726,6 +905,33 @@ void PoseEstimator::visualize() {
         visualizer_->logPose(est, current_pose_idx_);
     }
 #endif
+}
+
+void PoseEstimator::recordMemoryUsageLocked() {
+    last_memory_usage_ = readMemoryUsage();
+}
+
+gtsam::Pose3 PoseEstimator::getCurrentCameraPose() const {
+    // 1. Lift current 2D robot pose to 3D
+    gtsam::Pose3 robot_pose(
+        gtsam::Rot3::Ypr(current_pose_.theta(), 0.0, 0.0),
+        gtsam::Point3(current_pose_.x(), current_pose_.y(), 0.0)
+    );
+
+    // 2. Apply turret rotation
+    gtsam::Pose3 turret_pose(
+        gtsam::Rot3::Yaw(last_turret_yaw_rad_),
+        gtsam::Point3(0, 0, 0)
+    );
+
+    // 3. Apply camera extrinsics (body to camera)
+    gtsam::Pose3 extrinsics(
+        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
+        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
+    );
+
+    // 4. Compose full transformation: World -> Robot -> Turret -> Camera
+    return robot_pose.compose(turret_pose).compose(extrinsics);
 }
 
 } // namespace decode

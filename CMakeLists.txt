@@ -18,6 +18,16 @@ set(DECODE_GTEST_GIT_TAG "v1.14.0" CACHE STRING "GoogleTest git tag")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Enable dead code elimination (function/data sections + gc-sections)
+if(NOT MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections -fvisibility=hidden")
+    if(APPLE)
+        add_link_options("-Wl,-dead_strip")
+    else()
+        add_link_options("-Wl,--gc-sections")
+    endif()
+endif()
 # Collect Android toolchain arguments for passing to ExternalProject_Add
 set(EXTERNAL_ANDROID_ARGS "")
 foreach(var ANDROID_ABI ANDROID_PLATFORM ANDROID_STL ANDROID_ARM_NEON ANDROID_PIE)
@@ -238,10 +248,6 @@ if(JNI_FOUND OR CMAKE_SYSTEM_NAME STREQUAL "Android" OR DECODE_BUILD_FOR_ANDROID
     if(CMAKE_SYSTEM_NAME STREQUAL "Android" OR DECODE_BUILD_FOR_ANDROID)
         target_link_libraries(decode_estimator_jni PRIVATE c++_static)
     endif()
-
-    # Add gc-sections for smaller binary size
-    target_link_options(decode_estimator_jni PRIVATE -Wl,--gc-sections)
-    target_compile_options(decode_estimator_jni PRIVATE -ffunction-sections -fdata-sections)
 endif()
 
 if(DECODE_BUILD_EXAMPLES)

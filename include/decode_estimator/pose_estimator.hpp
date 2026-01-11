@@ -176,8 +176,19 @@ public:
     /// Get average solve time (milliseconds)
     double getAverageSolveTimeMs() const;
 
+    /// Get last recorded memory usage snapshot
+    MemoryUsage getLastMemoryUsage() const;
+
+    /// Get diagnostic counters and timings
+    DiagnosticsSnapshot getDiagnosticsSnapshot() const;
+
     /// Get landmark map (for visualization/debugging)
     const LandmarkMap& getLandmarkMap() const;
+
+    /// Get current camera pose in world frame
+    /// Uses last known robot pose, turret yaw, and camera extrinsics
+    /// @return Camera pose (position + orientation) in world frame
+    gtsam::Pose3 getCurrentCameraPose() const;
 
     /// Log rays from robot to landmarks (visualization only)
     void logLandmarkRays(const PoseEstimate& pose,
@@ -196,6 +207,14 @@ public:
                               double ekf_error,
                               double post_position_error,
                               double post_ekf_error);
+    
+    // Visualization Control
+    void enableVisualization(bool enabled);
+    void configureVisualization(bool stream, const std::string& url_or_path, const std::string& app_id);
+    void flushVisualization();
+    
+    // Helper for debugging/viz
+    std::vector<std::pair<double,double>> getPredictedCorners(int32_t tag_id) const;
 
 private:
     /// Create noise models from config
@@ -213,6 +232,9 @@ private:
 
     /// Update visualization (no-op if disabled)
     void visualize();
+
+    /// Record process memory usage (caller must hold mutex)
+    void recordMemoryUsageLocked();
 
 private:
     static constexpr size_t kHorizonCapacity = 2000;
@@ -255,6 +277,14 @@ private:
     double last_solve_ms_ = 0.0;
     double total_solve_ms_ = 0.0;
     size_t solve_count_ = 0;
+
+    // Memory usage snapshot
+    MemoryUsage last_memory_usage_;
+
+    // Horizon reset diagnostics
+    double last_horizon_reset_ms_ = 0.0;
+    double last_horizon_cov_ms_ = 0.0;
+    size_t last_horizon_reset_pose_index_ = 0;
 
     // Post-process state for vision resets
     double last_tag_timestamp_ = -1.0;

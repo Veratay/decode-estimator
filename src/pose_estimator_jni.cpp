@@ -34,10 +34,35 @@ decode::PoseEstimator* from_handle(jlong handle) {
     return reinterpret_cast<decode::PoseEstimator*>(handle);
 }
 
+std::array<gtsam::Point3, 4> computeLandmarkCornersWorld(const decode::Landmark& lm) {
+    // Compute local corners (tag frame)
+    double s = lm.size / 2.0;
+    std::array<gtsam::Point3, 4> corners_local = {
+        gtsam::Point3(-s, -s, 0.0),  // TL (Top-Left)
+        gtsam::Point3( s, -s, 0.0),  // TR (Top-Right)
+        gtsam::Point3( s,  s, 0.0),  // BR (Bottom-Right)
+        gtsam::Point3(-s,  s, 0.0)   // BL (Bottom-Left)
+    };
+
+    // Create landmark pose in world frame
+    gtsam::Pose3 tag_pose_world(
+        gtsam::Rot3::Ypr(lm.yaw, lm.pitch, lm.roll),
+        gtsam::Point3(lm.x, lm.y, lm.z)
+    );
+
+    // Transform corners to world frame
+    std::array<gtsam::Point3, 4> corners_world;
+    for (size_t i = 0; i < 4; ++i) {
+        corners_world[i] = tag_pose_world.transformFrom(corners_local[i]);
+    }
+
+    return corners_world;
+}
+
 } // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) {
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) {
     try {
         auto* estimator = new decode::PoseEstimator();
         return reinterpret_cast<jlong>(estimator);
@@ -51,7 +76,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeCreate(JNIEnv* env, jclass) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeCreateWithConfig(
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
     JNIEnv* env, jclass, jdouble prior_sigma_xy, jdouble prior_sigma_theta,
     jdouble odom_sigma_xy, jdouble odom_sigma_theta, jdouble default_pixel_sigma,
     jdouble relinearize_threshold, jint relinearize_skip, jboolean enable_partial_relinearization,
@@ -126,7 +151,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeCreateWithConfig(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass, jlong handle) {
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_argument(env, "PoseEstimator handle is null");
         return;
@@ -137,7 +162,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeDestroy(JNIEnv* env, jclass, j
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeInitialize(
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeInitialize(
     JNIEnv* env, jclass, jlong handle, jintArray tag_ids, 
     jdoubleArray lm_x, jdoubleArray lm_y, jdoubleArray lm_z,
     jdoubleArray lm_roll, jdoubleArray lm_pitch, jdoubleArray lm_yaw,
@@ -202,7 +227,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeInitialize(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeReset(JNIEnv* env, jclass, jlong handle) {
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeReset(JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
         return;
@@ -219,7 +244,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeReset(JNIEnv* env, jclass, jlo
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeProcessOdometry(
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeProcessOdometry(
     JNIEnv* env, jclass, jlong handle, jdouble dx, jdouble dy, jdouble dtheta,
     jdouble timestamp) {
     if (handle == 0) {
@@ -239,7 +264,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeProcessOdometry(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeAddTagMeasurement(
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeAddTagMeasurement(
     JNIEnv* env, jclass, jlong handle, jint tag_id, 
     jdoubleArray corners, // Expecting 8 doubles: u1,v1, u2,v2, u3,v3, u4,v4
     jdouble pixel_sigma, jdouble timestamp, jdouble turret_yaw_rad) {
@@ -279,7 +304,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeAddTagMeasurement(
     env->ReleaseDoubleArrayElements(corners, c, JNI_ABORT);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_sigmacorns_control_PoseEstimatorBridge_nativeUpdate(
+extern "C" JNIEXPORT void JNICALL Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeUpdate(
     JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
@@ -297,7 +322,7 @@ extern "C" JNIEXPORT void JNICALL Java_sigmacorns_control_PoseEstimatorBridge_na
 }
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeGetCurrentEstimate(JNIEnv* env,
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetCurrentEstimate(JNIEnv* env,
                                                                         jclass,
                                                                         jlong handle) {
     if (handle == 0) {
@@ -329,7 +354,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeGetCurrentEstimate(JNIEnv* env
 }
 
 extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeGetCurrentEstimateWithCovariance(
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetCurrentEstimateWithCovariance(
     JNIEnv* env, jclass, jlong handle) {
     if (handle == 0) {
         throw_illegal_state(env, "PoseEstimator handle is null");
@@ -370,7 +395,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeGetCurrentEstimateWithCovarian
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeIsInitialized(JNIEnv* env,
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeIsInitialized(JNIEnv* env,
                                                                    jclass,
                                                                    jlong handle) {
     if (handle == 0) {
@@ -390,7 +415,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeIsInitialized(JNIEnv* env,
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeGetLastSolveTimeMs(JNIEnv* env,
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetLastSolveTimeMs(JNIEnv* env,
                                                                         jclass,
                                                                         jlong handle) {
     if (handle == 0) {
@@ -410,7 +435,7 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeGetLastSolveTimeMs(JNIEnv* env
 }
 
 extern "C" JNIEXPORT jdouble JNICALL
-Java_sigmacorns_control_PoseEstimatorBridge_nativeGetAverageSolveTimeMs(JNIEnv* env,
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetAverageSolveTimeMs(JNIEnv* env,
                                                                            jclass,
                                                                            jlong handle) {
     if (handle == 0) {
@@ -427,4 +452,309 @@ Java_sigmacorns_control_PoseEstimatorBridge_nativeGetAverageSolveTimeMs(JNIEnv* 
         throw_runtime_exception(env, "Get average solve time failed: unknown error");
     }
     return 0.0;
+}
+
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetLastMemoryUsage(JNIEnv* env,
+                                                                        jclass,
+                                                                        jlong handle) {
+    if (handle == 0) {
+        throw_illegal_state(env, "PoseEstimator handle is null");
+        return nullptr;
+    }
+
+    auto* estimator = from_handle(handle);
+    try {
+        const decode::MemoryUsage usage = estimator->getLastMemoryUsage();
+
+        // Return [virtual_bytes, resident_bytes, shared_bytes, data_bytes, valid]
+        jlongArray result = env->NewLongArray(5);
+        if (!result) {
+            throw_runtime_exception(env, "Failed to allocate memory usage array");
+            return nullptr;
+        }
+
+        jlong values[5] = {
+            static_cast<jlong>(usage.virtual_bytes),
+            static_cast<jlong>(usage.resident_bytes),
+            static_cast<jlong>(usage.shared_bytes),
+            static_cast<jlong>(usage.data_bytes),
+            static_cast<jlong>(usage.valid ? 1 : 0)
+        };
+        env->SetLongArrayRegion(result, 0, 5, values);
+        return result;
+    } catch (const std::exception& e) {
+        throw_runtime_exception(env, std::string("Get memory usage failed: ") + e.what());
+    } catch (...) {
+        throw_runtime_exception(env, "Get memory usage failed: unknown error");
+    }
+    return nullptr;
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetDiagnosticsSnapshot(JNIEnv* env,
+                                                                            jclass,
+                                                                            jlong handle) {
+    if (handle == 0) {
+        throw_illegal_state(env, "PoseEstimator handle is null");
+        return nullptr;
+    }
+
+    auto* estimator = from_handle(handle);
+    try {
+        const decode::DiagnosticsSnapshot snapshot = estimator->getDiagnosticsSnapshot();
+
+        // Return [pending_tags, pending_graph_factors, pending_values, current_pose_index,
+        //         horizon_capacity, last_solve_ms, avg_solve_ms, last_horizon_reset_ms,
+        //         last_horizon_cov_ms, last_horizon_reset_pose_index]
+        jdoubleArray result = env->NewDoubleArray(10);
+        if (!result) {
+            throw_runtime_exception(env, "Failed to allocate diagnostics array");
+            return nullptr;
+        }
+
+        jdouble values[10] = {
+            static_cast<jdouble>(snapshot.pending_tags),
+            static_cast<jdouble>(snapshot.pending_graph_factors),
+            static_cast<jdouble>(snapshot.pending_values),
+            static_cast<jdouble>(snapshot.current_pose_index),
+            static_cast<jdouble>(snapshot.horizon_capacity),
+            snapshot.last_solve_ms,
+            snapshot.avg_solve_ms,
+            snapshot.last_horizon_reset_ms,
+            snapshot.last_horizon_cov_ms,
+            static_cast<jdouble>(snapshot.last_horizon_reset_pose_index)
+        };
+        env->SetDoubleArrayRegion(result, 0, 10, values);
+        return result;
+    } catch (const std::exception& e) {
+        throw_runtime_exception(env, std::string("Get diagnostics failed: ") + e.what());
+    } catch (...) {
+        throw_runtime_exception(env, "Get diagnostics failed: unknown error");
+    }
+    return nullptr;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeEnableVisualization(
+    JNIEnv* env, jclass, jlong handle, jboolean enabled) {
+    if (handle == 0) return;
+    auto* estimator = from_handle(handle);
+    estimator->enableVisualization(enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeConfigureVisualization(
+    JNIEnv* env, jclass, jlong handle, jboolean stream, jstring urlOrPath, jstring appId) {
+    if (handle == 0) return;
+    
+    const char* url_path_c = env->GetStringUTFChars(urlOrPath, nullptr);
+    const char* app_id_c = env->GetStringUTFChars(appId, nullptr);
+    
+    auto* estimator = from_handle(handle);
+    estimator->configureVisualization(stream == JNI_TRUE, std::string(url_path_c), std::string(app_id_c));
+    
+    env->ReleaseStringUTFChars(urlOrPath, url_path_c);
+    env->ReleaseStringUTFChars(appId, app_id_c);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeFlushVisualization(
+    JNIEnv* env, jclass, jlong handle) {
+    if (handle == 0) return;
+    auto* estimator = from_handle(handle);
+    estimator->flushVisualization();
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetPredictedCorners(
+    JNIEnv* env, jclass, jlong handle, jint tagId) {
+    if (handle == 0) return nullptr;
+    auto* estimator = from_handle(handle);
+    
+    std::vector<std::pair<double, double>> corners = estimator->getPredictedCorners(tagId);
+    if (corners.empty()) return nullptr;
+    
+    jdoubleArray result = env->NewDoubleArray(corners.size() * 2);
+    jdouble* buf = env->GetDoubleArrayElements(result, nullptr);
+    
+    for(size_t i=0; i<corners.size(); ++i) {
+        buf[2*i] = corners[i].first;
+        buf[2*i+1] = corners[i].second;
+    }
+    
+    env->ReleaseDoubleArrayElements(result, buf, 0);
+    return result;
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetAllLandmarkCorners(JNIEnv* env,
+                                                                            jclass,
+                                                                            jlong handle) {
+    if (handle == 0) {
+        throw_illegal_state(env, "PoseEstimator handle is null");
+        return nullptr;
+    }
+
+    auto* estimator = from_handle(handle);
+    try {
+        if (!estimator->isInitialized()) {
+            throw_illegal_state(env, "PoseEstimator not initialized");
+            return nullptr;
+        }
+
+        const auto& landmark_map = estimator->getLandmarkMap();
+        const auto& all_landmarks = landmark_map.getAllLandmarks();
+
+        // Handle empty landmark map
+        if (all_landmarks.empty()) {
+            return env->NewDoubleArray(0);
+        }
+
+        // Allocate result array: num_landmarks * 13 (1 tag_id + 4 corners * 3 coords)
+        jdoubleArray result = env->NewDoubleArray(all_landmarks.size() * 13);
+        if (!result) {
+            throw_runtime_exception(env, "Failed to allocate landmark corners array");
+            return nullptr;
+        }
+
+        // Compute corners for each landmark and fill array
+        std::vector<jdouble> values;
+        values.reserve(all_landmarks.size() * 13);
+
+        for (const auto& [tag_id, lm] : all_landmarks) {
+            // Add tag ID as double
+            values.push_back(static_cast<jdouble>(tag_id));
+
+            // Compute corners using helper function
+            auto corners_world = computeLandmarkCornersWorld(lm);
+
+            // Add 4 corners (12 values: x,y,z for each corner)
+            for (const auto& corner : corners_world) {
+                values.push_back(corner.x());
+                values.push_back(corner.y());
+                values.push_back(corner.z());
+            }
+        }
+
+        env->SetDoubleArrayRegion(result, 0, values.size(), values.data());
+        return result;
+    } catch (const std::exception& e) {
+        throw_runtime_exception(env,
+                                std::string("Get all landmark corners failed: ") + e.what());
+    } catch (...) {
+        throw_runtime_exception(env, "Get all landmark corners failed: unknown error");
+    }
+    return nullptr;
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetLandmarkCorners(JNIEnv* env,
+                                                                         jclass,
+                                                                         jlong handle,
+                                                                         jint tag_id) {
+    if (handle == 0) {
+        throw_illegal_state(env, "PoseEstimator handle is null");
+        return nullptr;
+    }
+
+    auto* estimator = from_handle(handle);
+    try {
+        if (!estimator->isInitialized()) {
+            throw_illegal_state(env, "PoseEstimator not initialized");
+            return nullptr;
+        }
+
+        const auto& landmark_map = estimator->getLandmarkMap();
+        auto landmark_opt = landmark_map.getLandmark(static_cast<int32_t>(tag_id));
+
+        if (!landmark_opt) {
+            throw_illegal_argument(
+                env, std::string("Landmark with ID ") + std::to_string(tag_id) + " not found");
+            return nullptr;
+        }
+
+        // Allocate result array: 12 values (4 corners * 3 coords)
+        jdoubleArray result = env->NewDoubleArray(12);
+        if (!result) {
+            throw_runtime_exception(env, "Failed to allocate landmark corners array");
+            return nullptr;
+        }
+
+        // Compute corners using helper function
+        auto corners_world = computeLandmarkCornersWorld(*landmark_opt);
+
+        // Fill array with corner coordinates
+        jdouble values[12];
+        size_t idx = 0;
+        for (const auto& corner : corners_world) {
+            values[idx++] = corner.x();
+            values[idx++] = corner.y();
+            values[idx++] = corner.z();
+        }
+
+        env->SetDoubleArrayRegion(result, 0, 12, values);
+        return result;
+    } catch (const std::exception& e) {
+        throw_runtime_exception(env,
+                                std::string("Get landmark corners failed: ") + e.what());
+    } catch (...) {
+        throw_runtime_exception(env, "Get landmark corners failed: unknown error");
+    }
+    return nullptr;
+}
+
+extern "C" JNIEXPORT jdoubleArray JNICALL
+Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeGetCameraUnitVectors(JNIEnv* env,
+                                                                           jclass,
+                                                                           jlong handle) {
+    if (handle == 0) {
+        throw_illegal_state(env, "PoseEstimator handle is null");
+        return nullptr;
+    }
+
+    auto* estimator = from_handle(handle);
+    try {
+        if (!estimator->isInitialized()) {
+            throw_illegal_state(env, "PoseEstimator not initialized");
+            return nullptr;
+        }
+
+        // Get current camera pose in world frame
+        gtsam::Pose3 camera_pose = estimator->getCurrentCameraPose();
+
+        // Extract position
+        gtsam::Point3 position = camera_pose.translation();
+
+        // Extract rotation matrix (3x3)
+        gtsam::Matrix3 rotation = camera_pose.rotation().matrix();
+
+        // Allocate result array: 12 doubles
+        jdoubleArray result = env->NewDoubleArray(12);
+        if (!result) {
+            throw_runtime_exception(env, "Failed to allocate camera vectors array");
+            return nullptr;
+        }
+
+        // Fill array: position + right + up + forward
+        jdouble values[12] = {
+            // Position (x, y, z)
+            position.x(), position.y(), position.z(),
+            // Right vector (column 0)
+            rotation(0, 0), rotation(1, 0), rotation(2, 0),
+            // Up vector (column 1)
+            rotation(0, 1), rotation(1, 1), rotation(2, 1),
+            // Forward vector (column 2)
+            rotation(0, 2), rotation(1, 2), rotation(2, 2)
+        };
+
+        env->SetDoubleArrayRegion(result, 0, 12, values);
+        return result;
+    } catch (const std::exception& e) {
+        throw_runtime_exception(env,
+                                std::string("Get camera unit vectors failed: ") + e.what());
+    } catch (...) {
+        throw_runtime_exception(env, "Get camera unit vectors failed: unknown error");
+    }
+    return nullptr;
 }
