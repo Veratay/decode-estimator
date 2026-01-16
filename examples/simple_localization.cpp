@@ -172,6 +172,19 @@ int main() {
     config.odom_sigma_xy = 0.01;
     config.odom_sigma_theta = 0.005;
     config.default_pixel_sigma = 1.0;
+
+    // Viewing angle-dependent noise (new feature)
+    config.pixel_sigma_angle_k = 2.0;  // Noise increases with viewing angle
+
+    // Spatial correlation downweighting (new feature)
+    config.enable_spatial_correlation = true;
+    config.correlation_distance_m = 0.3;  // Measurements within 0.3m are correlated
+    config.correlation_downweight_factor = 2.0;  // Double noise for correlated measurements
+    config.correlation_history_size = 100;
+
+    // Bias correction (new feature)
+    config.enable_bias_correction = true;
+    config.radial_bias_k = 0.01;  // Radial bias coefficient
     
     // Camera Setup (VGA)
     config.fx = 800.0;

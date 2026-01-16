@@ -228,6 +228,130 @@ gtsam::Symbol PoseEstimator::poseSymbol(size_t idx) {
     return X(idx);
 }
 
+gtsam::SharedNoiseModel PoseEstimator::computeTagNoiseModel(
+    const TagMeasurement& tag,
+    const gtsam::Pose2& robot_pose,
+    const gtsam::Pose3& tag_pose_world,
+    const gtsam::Pose3& camera_extrinsics,
+    double turret_yaw_rad) {
+
+    // Compute camera pose in world frame
+    gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(turret_yaw_rad), gtsam::Point3(0, 0, 0));
+    gtsam::Pose3 robot_pose_3d(gtsam::Rot3::Ypr(robot_pose.theta(), 0.0, 0.0),
+                               gtsam::Point3(robot_pose.x(), robot_pose.y(), 0.0));
+    gtsam::Pose3 camera_pose = robot_pose_3d.compose(turret_pose).compose(camera_extrinsics);
+
+    // Calculate viewing angle
+    gtsam::Point3 tag_normal_world = tag_pose_world.rotation().matrix() * gtsam::Point3(0, 0, 1);
+    gtsam::Point3 tag_to_camera = camera_pose.translation() - tag_pose_world.translation();
+    double viewing_angle = angleBetween(tag_normal_world, tag_to_camera);
+
+    // Scale base sigma with viewing angle (quadratic model)
+    double base_sigma = (tag.pixel_sigma > 0) ? tag.pixel_sigma : config_.default_pixel_sigma;
+    double angle_factor = 1.0 + config_.pixel_sigma_angle_k * viewing_angle * viewing_angle;
+    double adjusted_sigma = base_sigma * angle_factor;
+
+    // Apply spatial correlation downweighting if enabled
+    if (config_.enable_spatial_correlation) {
+        double correlation_factor = computeSpatialCorrelationFactor(tag.tag_id, robot_pose);
+        adjusted_sigma *= correlation_factor;
+    }
+
+    return gtsam::noiseModel::Isotropic::Sigma(8, adjusted_sigma);
+}
+
+double PoseEstimator::computeSpatialCorrelationFactor(
+    int32_t tag_id,
+    const gtsam::Pose2& current_pose) {
+
+    if (!config_.enable_spatial_correlation) {
+        return 1.0;
+    }
+
+    // Check measurement history for nearby measurements of same tag
+    for (const auto& record : measurement_history_) {
+        if (record.tag_id != tag_id) {
+            continue;
+        }
+
+        double distance = current_pose.range(record.robot_pose);
+        if (distance < config_.correlation_distance_m) {
+            return config_.correlation_downweight_factor;
+        }
+    }
+
+    return 1.0;  // No correlation
+}
+
+std::vector<std::pair<double, double>> PoseEstimator::correctMeasurementBias(
+    const TagMeasurement& tag,
+    const gtsam::Pose2& robot_pose,
+    const gtsam::Pose3& tag_pose_world,
+    const gtsam::Pose3& camera_extrinsics,
+    double turret_yaw_rad) {
+
+    if (!config_.enable_bias_correction) {
+        return tag.corners;  // No correction
+    }
+
+    // Compute camera pose and viewing angle
+    gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(turret_yaw_rad), gtsam::Point3(0, 0, 0));
+    gtsam::Pose3 robot_pose_3d(gtsam::Rot3::Ypr(robot_pose.theta(), 0.0, 0.0),
+                               gtsam::Point3(robot_pose.x(), robot_pose.y(), 0.0));
+    gtsam::Pose3 camera_pose = robot_pose_3d.compose(turret_pose).compose(camera_extrinsics);
+
+    gtsam::Point3 tag_normal = tag_pose_world.rotation().matrix() * gtsam::Point3(0, 0, 1);
+    gtsam::Point3 tag_to_camera = camera_pose.translation() - tag_pose_world.translation();
+    double viewing_angle = angleBetween(tag_normal, tag_to_camera);
+
+    // Compute bias magnitude (increases with angle)
+    double radial_bias = config_.radial_bias_k * viewing_angle * viewing_angle;
+
+    // Create camera intrinsics from config
+    CameraModel intrinsics;
+    intrinsics.fx = config_.fx;
+    intrinsics.fy = config_.fy;
+    intrinsics.cx = config_.cx;
+    intrinsics.cy = config_.cy;
+    intrinsics.k1 = config_.k1;
+    intrinsics.k2 = config_.k2;
+    intrinsics.k3 = config_.k3;
+    intrinsics.p1 = config_.p1;
+    intrinsics.p2 = config_.p2;
+
+    // Compute tag center in image
+    gtsam::Point3 tag_center_world = tag_pose_world.translation();
+    gtsam::Point2 tag_center_uv;
+    if (!projectPoint(camera_pose, intrinsics, tag_center_world, &tag_center_uv)) {
+        // If projection fails, return uncorrected corners
+        return tag.corners;
+    }
+
+    // Apply radial bias correction to each corner
+    std::vector<std::pair<double, double>> corrected_corners;
+    corrected_corners.reserve(tag.corners.size());
+
+    for (const auto& corner : tag.corners) {
+        double du = corner.first - tag_center_uv.x();
+        double dv = corner.second - tag_center_uv.y();
+        double r = std::sqrt(du*du + dv*dv);
+
+        if (r > 1e-6) {  // Avoid division by zero
+            // Apply bias correction outward from center
+            double scale = 1.0 + (radial_bias / r);
+            corrected_corners.emplace_back(
+                tag_center_uv.x() + du * scale,
+                tag_center_uv.y() + dv * scale
+            );
+        } else {
+            // Corner is at center, no correction needed
+            corrected_corners.push_back(corner);
+        }
+    }
+
+    return corrected_corners;
+}
+
 void PoseEstimator::resetHorizonWithPrior(const gtsam::Pose2& pose,
                                           const gtsam::SharedNoiseModel& prior_noise) {
     // Clear any pending factors/values
@@ -589,12 +713,19 @@ PoseEstimate PoseEstimator::update() {
             }
 #endif
 
-            // Create 8D noise model
-            double sigma = (tag.pixel_sigma > 0) ? tag.pixel_sigma
-                                                 : config_.default_pixel_sigma;
+            if (!is_tag_visible(tag, tag_pose_world, landmark_opt->size)) {
+                continue;
+            }
 
-            gtsam::SharedNoiseModel pixel_noise =
-                gtsam::noiseModel::Isotropic::Sigma(8, sigma);
+            // Apply bias correction to corners
+            auto corrected_corners = correctMeasurementBias(
+                tag, current_pose_, tag_pose_world, extrinsics, tag.turret_yaw_rad);
+
+            // Create viewing angle-dependent noise model with spatial correlation
+            gtsam::SharedNoiseModel pixel_noise = computeTagNoiseModel(
+                tag, current_pose_, tag_pose_world, extrinsics, tag.turret_yaw_rad);
+
+            // Apply robust loss if enabled
             if (config_.enable_robust_tag_loss) {
                 gtsam::noiseModel::mEstimator::Base::shared_ptr estimator;
                 switch (config_.robust_tag_loss) {
@@ -614,10 +745,6 @@ PoseEstimate PoseEstimator::update() {
                 pixel_noise = gtsam::noiseModel::Robust::Create(estimator, pixel_noise);
             }
 
-            if (!is_tag_visible(tag, tag_pose_world, landmark_opt->size)) {
-                continue;
-            }
-
             // Add projection factor
             pending_graph_.add(TagProjectionFactor(
                 X(current_pose_idx_),
@@ -626,7 +753,7 @@ PoseEstimate PoseEstimator::update() {
                 intrinsics,
                 extrinsics,
                 tag.turret_yaw_rad,
-                tag.corners,
+                corrected_corners,
                 pixel_noise
             ));
 
@@ -640,6 +767,21 @@ PoseEstimate PoseEstimator::update() {
                     cheirality_noise,
                     config_.min_tag_z_distance
                 ));
+            }
+
+            // Record measurement for spatial correlation tracking
+            if (config_.enable_spatial_correlation) {
+                measurement_history_.push_back({
+                    tag.tag_id,
+                    current_pose_idx_,
+                    current_pose_,
+                    tag.timestamp
+                });
+
+                // Maintain sliding window
+                if (measurement_history_.size() > config_.correlation_history_size) {
+                    measurement_history_.pop_front();
+                }
             }
 
     }

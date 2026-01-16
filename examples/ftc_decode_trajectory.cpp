@@ -24,12 +24,12 @@
 constexpr double DT = 0.02;            // 50 Hz
 constexpr double ROBOT_SPEED = 0.6;    // m/s
 constexpr double TURN_GAIN = 2.0;      // Heading correction gain
-constexpr int NUM_ITERATIONS = 20000;
+constexpr int NUM_ITERATIONS = 50000;
 
 // Noise parameters for simulation
-constexpr double ODOM_NOISE_XY = 0.004;     // meters per step
-constexpr double ODOM_NOISE_THETA = 0.002;  // radians per step
-constexpr double PIXEL_NOISE = 2.0;         // pixels
+constexpr double ODOM_NOISE_XY = 0.0004;     // meters per step
+constexpr double ODOM_NOISE_THETA = 0.0002;  // radians per step
+constexpr double PIXEL_NOISE = 1.0;         // pixels
 constexpr double TURRET_YAW_AMPLITUDE = 0.8; // radians
 constexpr double TURRET_YAW_RATE = 0.6;      // rad/s
 
@@ -167,7 +167,20 @@ int main() {
     config.odom_sigma_xy = 0.01;
     config.odom_sigma_theta = 0.005;
     config.default_pixel_sigma = 1.0;
-    
+
+    // Viewing angle-dependent noise (new feature)
+    config.pixel_sigma_angle_k = 2.0;  // Noise increases with viewing angle
+
+    // Spatial correlation downweighting (new feature)
+    config.enable_spatial_correlation = true;
+    config.correlation_distance_m = 0.3;  // Measurements within 0.3m are correlated
+    config.correlation_downweight_factor = 2.0;  // Double noise for correlated measurements
+    config.correlation_history_size = 100;
+
+    // Bias correction (new feature)
+    config.enable_bias_correction = true;
+    config.radial_bias_k = 0.01;  // Radial bias coefficient
+
     config.fx = 800.0;
     config.fy = 800.0;
     config.cx = 320.0;

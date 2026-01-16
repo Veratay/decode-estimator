@@ -89,7 +89,11 @@ Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
     jdouble fx, jdouble fy, jdouble cx, jdouble cy,
     jdouble k1, jdouble k2, jdouble k3, jdouble p1, jdouble p2,
     jdouble camera_offset_x, jdouble camera_offset_y, jdouble camera_offset_z,
-    jdouble camera_roll, jdouble camera_pitch, jdouble camera_yaw) {
+    jdouble camera_roll, jdouble camera_pitch, jdouble camera_yaw,
+    jdouble pixel_sigma_angle_k,
+    jboolean enable_spatial_correlation, jdouble correlation_distance_m,
+    jdouble correlation_downweight_factor, jint correlation_history_size,
+    jboolean enable_bias_correction, jdouble radial_bias_k) {
     try {
         decode::EstimatorConfig config;
         config.prior_sigma_xy = prior_sigma_xy;
@@ -128,6 +132,20 @@ Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
         config.camera_roll = camera_roll;
         config.camera_pitch = camera_pitch;
         config.camera_yaw = camera_yaw;
+
+        // Viewing angle-dependent noise
+        config.pixel_sigma_angle_k = pixel_sigma_angle_k;
+
+        // Spatial correlation downweighting
+        config.enable_spatial_correlation = (enable_spatial_correlation == JNI_TRUE);
+        config.correlation_distance_m = correlation_distance_m;
+        config.correlation_downweight_factor = correlation_downweight_factor;
+        config.correlation_history_size = static_cast<size_t>(correlation_history_size);
+
+        // Bias correction
+        config.enable_bias_correction = (enable_bias_correction == JNI_TRUE);
+        config.radial_bias_k = radial_bias_k;
+
         switch (robust_tag_loss) {
             case 0:
                 config.robust_tag_loss = decode::RobustLossType::Huber;

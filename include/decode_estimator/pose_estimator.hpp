@@ -11,6 +11,7 @@
 #include <gtsam/nonlinear/Values.h>
 
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -22,6 +23,14 @@ enum class RobustLossType {
     Huber,
     Tukey,
     Cauchy
+};
+
+/// Record of a measurement for spatial correlation tracking
+struct MeasurementRecord {
+    int32_t tag_id;
+    size_t pose_idx;
+    gtsam::Pose2 robot_pose;
+    double timestamp;
 };
 
 /// Configuration for the pose estimator
@@ -58,6 +67,19 @@ struct EstimatorConfig {
     bool enable_cheirality_check = true;
     double cheirality_sigma = 0.1;
     double min_tag_z_distance = 0.1;
+
+    /// Viewing angle-dependent noise
+    double pixel_sigma_angle_k = 2.0;  ///< Quadratic coefficient for angle-dependent noise (doubles noise at ~54°)
+
+    /// Spatial correlation downweighting
+    bool enable_spatial_correlation = true;
+    double correlation_distance_m = 0.3;  ///< Distance threshold for "similar places" (meters)
+    double correlation_downweight_factor = 2.0;  ///< Sigma multiplier for correlated measurements
+    size_t correlation_history_size = 100;  ///< Sliding window size for measurement history
+
+    /// Bias correction
+    bool enable_bias_correction = true;
+    double radial_bias_k = 0.01;  ///< Radial bias coefficient (tune during testing)
 
     /// Post-process estimates after vision gap resets
     bool enable_post_process = true;
@@ -228,6 +250,27 @@ private:
     /// Create iSAM2 instance with configured parameters
     void createISAM2();
 
+    /// Compute viewing angle-dependent noise model for a tag measurement
+    gtsam::SharedNoiseModel computeTagNoiseModel(
+        const TagMeasurement& tag,
+        const gtsam::Pose2& robot_pose,
+        const gtsam::Pose3& tag_pose_world,
+        const gtsam::Pose3& camera_extrinsics,
+        double turret_yaw_rad);
+
+    /// Compute spatial correlation downweighting factor
+    double computeSpatialCorrelationFactor(
+        int32_t tag_id,
+        const gtsam::Pose2& current_pose);
+
+    /// Apply bias correction to tag corner measurements
+    std::vector<std::pair<double, double>> correctMeasurementBias(
+        const TagMeasurement& tag,
+        const gtsam::Pose2& robot_pose,
+        const gtsam::Pose3& tag_pose_world,
+        const gtsam::Pose3& camera_extrinsics,
+        double turret_yaw_rad);
+
     /// Get symbol for pose at index
     static gtsam::Symbol poseSymbol(size_t idx);
 
@@ -271,6 +314,9 @@ private:
 
     // Pending measurements for next update
     std::vector<TagMeasurement> pending_tags_;
+
+    // Measurement history for spatial correlation
+    std::deque<MeasurementRecord> measurement_history_;
 
     // Thread safety
     mutable std::mutex mutex_;
