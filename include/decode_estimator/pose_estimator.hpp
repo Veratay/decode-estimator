@@ -81,6 +81,14 @@ struct EstimatorConfig {
     bool enable_bias_correction = true;
     double radial_bias_k = 0.01;  ///< Radial bias coefficient (tune during testing)
 
+    /// Multi-hypothesis initialization (for large prior uncertainty)
+    bool enable_multi_hypothesis_init = true;
+    double multi_hypothesis_theta_threshold = 1.0;  ///< Prior theta sigma threshold to trigger multi-hypothesis (radians)
+
+    /// Heading flip recovery (180° flip when all tags behind camera)
+    bool enable_heading_flip_recovery = true;
+    int heading_flip_min_tags = 1;  ///< Minimum expected tags to trigger flip check
+
     /// Post-process estimates after vision gap resets
     bool enable_post_process = true;
     double post_process_vision_gap_s = 0.4;
@@ -278,6 +286,18 @@ private:
     void resetHorizonWithPrior(const gtsam::Pose2& pose,
                                const gtsam::SharedNoiseModel& prior_noise);
 
+    /// Try multiple heading hypotheses and return best one
+    /// Returns the heading with lowest initial error
+    gtsam::Pose2 selectBestHeadingHypothesis(
+        const gtsam::Pose2& initial_pose,
+        const std::vector<TagMeasurement>& tags);
+
+    /// Check if heading should be flipped 180° due to all tags behind camera
+    /// Returns true if flip was applied
+    bool tryHeadingFlipRecovery(
+        const gtsam::Pose2& current_pose,
+        const std::vector<TagMeasurement>& tags);
+
     /// Update visualization (no-op if disabled)
     void visualize();
 
@@ -344,6 +364,9 @@ private:
     int settle_updates_remaining_ = 0;
     gtsam::Pose2 last_stable_pose_;
     gtsam::Pose2 odom_since_stable_;
+
+    // Multi-hypothesis initialization tracking
+    bool initial_multi_hypothesis_done_ = false;
 
 };
 

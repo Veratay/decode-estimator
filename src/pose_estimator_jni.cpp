@@ -93,7 +93,9 @@ Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
     jdouble pixel_sigma_angle_k,
     jboolean enable_spatial_correlation, jdouble correlation_distance_m,
     jdouble correlation_downweight_factor, jint correlation_history_size,
-    jboolean enable_bias_correction, jdouble radial_bias_k) {
+    jboolean enable_bias_correction, jdouble radial_bias_k,
+    jboolean enable_multi_hypothesis_init, jdouble multi_hypothesis_theta_threshold,
+    jboolean enable_heading_flip_recovery, jint heading_flip_min_tags) {
     try {
         decode::EstimatorConfig config;
         config.prior_sigma_xy = prior_sigma_xy;
@@ -145,6 +147,14 @@ Java_sigmacorns_control_aim_PoseEstimatorBridge_nativeCreateWithConfig(
         // Bias correction
         config.enable_bias_correction = (enable_bias_correction == JNI_TRUE);
         config.radial_bias_k = radial_bias_k;
+
+        // Multi-hypothesis initialization
+        config.enable_multi_hypothesis_init = (enable_multi_hypothesis_init == JNI_TRUE);
+        config.multi_hypothesis_theta_threshold = multi_hypothesis_theta_threshold;
+
+        // Heading flip recovery
+        config.enable_heading_flip_recovery = (enable_heading_flip_recovery == JNI_TRUE);
+        config.heading_flip_min_tags = static_cast<int>(heading_flip_min_tags);
 
         switch (robust_tag_loss) {
             case 0:

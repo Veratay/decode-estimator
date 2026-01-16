@@ -396,6 +396,7 @@ void PoseEstimator::initialize(const std::vector<Landmark>& landmarks,
     settle_updates_remaining_ = 0;
     last_stable_pose_ = current_pose_;
     odom_since_stable_ = gtsam::Pose2();
+    initial_multi_hypothesis_done_ = false;
 
     resetHorizonWithPrior(current_pose_, prior_noise_);
 
@@ -435,6 +436,7 @@ void PoseEstimator::reset() {
     settle_updates_remaining_ = 0;
     last_stable_pose_ = gtsam::Pose2();
     odom_since_stable_ = gtsam::Pose2();
+    initial_multi_hypothesis_done_ = false;
 
     createISAM2();
 }
@@ -539,6 +541,30 @@ PoseEstimate PoseEstimator::update() {
                             gtsam::Point3(current_pose_.x(), current_pose_.y(), 0.0));
 
     bool has_vision = !pending_tags_.empty();
+
+    // Multi-hypothesis initialization on first vision update with large prior uncertainty
+    if (has_vision && config_.enable_multi_hypothesis_init && !initial_multi_hypothesis_done_) {
+        if (config_.prior_sigma_theta >= config_.multi_hypothesis_theta_threshold) {
+            gtsam::Pose2 best_pose = selectBestHeadingHypothesis(current_pose_, pending_tags_);
+            if (best_pose.theta() != current_pose_.theta()) {
+                // Reset with best hypothesis
+                resetHorizonWithPrior(best_pose, prior_noise_);
+                current_pose_ = best_pose;
+                last_solved_pose_ = best_pose;
+            }
+        }
+        initial_multi_hypothesis_done_ = true;
+    }
+
+    // Heading flip recovery if all tags are behind camera
+    if (has_vision && config_.enable_heading_flip_recovery) {
+        if (tryHeadingFlipRecovery(current_pose_, pending_tags_)) {
+            // Heading was flipped, reinitialize robot_pose for subsequent computations
+            robot_pose = gtsam::Pose3(gtsam::Rot3::Ypr(current_pose_.theta(), 0.0, 0.0),
+                                      gtsam::Point3(current_pose_.x(), current_pose_.y(), 0.0));
+        }
+    }
+
     if (!has_vision) {
         PoseEstimate estimate;
         estimate.x = current_pose_.x();
@@ -1087,6 +1113,177 @@ gtsam::Pose3 PoseEstimator::getCurrentCameraPose() const {
 
     // 4. Compose full transformation: World -> Robot -> Turret -> Camera
     return robot_pose.compose(turret_pose).compose(extrinsics);
+}
+
+gtsam::Pose2 PoseEstimator::selectBestHeadingHypothesis(
+    const gtsam::Pose2& initial_pose,
+    const std::vector<TagMeasurement>& tags) {
+
+    if (tags.empty()) {
+        return initial_pose;
+    }
+
+    // Try 4 heading hypotheses: 0°, 90°, 180°, 270° relative to initial
+    const std::array<double, 4> heading_offsets = {0.0, M_PI / 2.0, M_PI, 3.0 * M_PI / 2.0};
+
+    double best_error = std::numeric_limits<double>::infinity();
+    gtsam::Pose2 best_pose = initial_pose;
+
+    // Camera configuration
+    CameraModel intrinsics;
+    intrinsics.fx = config_.fx;
+    intrinsics.fy = config_.fy;
+    intrinsics.cx = config_.cx;
+    intrinsics.cy = config_.cy;
+    intrinsics.k1 = config_.k1;
+    intrinsics.k2 = config_.k2;
+    intrinsics.k3 = config_.k3;
+    intrinsics.p1 = config_.p1;
+    intrinsics.p2 = config_.p2;
+    gtsam::Pose3 extrinsics(
+        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
+        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
+    );
+
+    for (double offset : heading_offsets) {
+        gtsam::Pose2 candidate(initial_pose.x(), initial_pose.y(),
+                               initial_pose.theta() + offset);
+
+        double total_error = 0.0;
+        int successful_projections = 0;
+
+        // Compute total projection error for all tags
+        for (const auto& tag : tags) {
+            auto landmark_opt = landmark_map_.getLandmark(tag.tag_id);
+            if (!landmark_opt) continue;
+
+            gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(candidate.theta(), 0.0, 0.0),
+                                    gtsam::Point3(candidate.x(), candidate.y(), 0.0));
+            gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad),
+                                     gtsam::Point3(0, 0, 0));
+            gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+
+            gtsam::Pose3 tag_pose_world(
+                gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
+                gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
+            );
+
+            // Project 4 corners and compute error
+            double s = landmark_opt->size / 2.0;
+            const std::array<gtsam::Point3, 4> corners_local = {
+                gtsam::Point3(-s, -s, 0.0),
+                gtsam::Point3( s, -s, 0.0),
+                gtsam::Point3( s,  s, 0.0),
+                gtsam::Point3(-s,  s, 0.0),
+            };
+
+            for (size_t i = 0; i < 4; ++i) {
+                gtsam::Point3 world_point = tag_pose_world.transformFrom(corners_local[i]);
+                gtsam::Point2 projected;
+
+                if (projectPoint(camera_pose, intrinsics, world_point, &projected)) {
+                    double dx = projected.x() - tag.corners[i].first;
+                    double dy = projected.y() - tag.corners[i].second;
+                    total_error += dx * dx + dy * dy;
+                    successful_projections++;
+                }
+            }
+        }
+
+        // Penalize hypotheses with failed projections
+        if (successful_projections == 0) {
+            total_error = std::numeric_limits<double>::infinity();
+        } else {
+            total_error /= successful_projections;
+        }
+
+        if (total_error < best_error) {
+            best_error = total_error;
+            best_pose = candidate;
+        }
+    }
+
+    return best_pose;
+}
+
+bool PoseEstimator::tryHeadingFlipRecovery(
+    const gtsam::Pose2& current_pose,
+    const std::vector<TagMeasurement>& tags) {
+
+    if (tags.size() < static_cast<size_t>(config_.heading_flip_min_tags)) {
+        return false;
+    }
+
+    // Camera configuration
+    CameraModel intrinsics;
+    intrinsics.fx = config_.fx;
+    intrinsics.fy = config_.fy;
+    intrinsics.cx = config_.cx;
+    intrinsics.cy = config_.cy;
+    intrinsics.k1 = config_.k1;
+    intrinsics.k2 = config_.k2;
+    intrinsics.k3 = config_.k3;
+    intrinsics.p1 = config_.p1;
+    intrinsics.p2 = config_.p2;
+    gtsam::Pose3 extrinsics(
+        gtsam::Rot3::Ypr(config_.camera_yaw, config_.camera_pitch, config_.camera_roll),
+        gtsam::Point3(config_.camera_offset_x, config_.camera_offset_y, config_.camera_offset_z)
+    );
+
+    // Check if all tags are behind camera
+    int total_corners = 0;
+    int failed_projections = 0;
+
+    for (const auto& tag : tags) {
+        auto landmark_opt = landmark_map_.getLandmark(tag.tag_id);
+        if (!landmark_opt) continue;
+
+        gtsam::Pose3 robot_pose(gtsam::Rot3::Ypr(current_pose.theta(), 0.0, 0.0),
+                                gtsam::Point3(current_pose.x(), current_pose.y(), 0.0));
+        gtsam::Pose3 turret_pose(gtsam::Rot3::Yaw(tag.turret_yaw_rad),
+                                 gtsam::Point3(0, 0, 0));
+        gtsam::Pose3 camera_pose = robot_pose.compose(turret_pose).compose(extrinsics);
+
+        gtsam::Pose3 tag_pose_world(
+            gtsam::Rot3::Ypr(landmark_opt->yaw, landmark_opt->pitch, landmark_opt->roll),
+            gtsam::Point3(landmark_opt->x, landmark_opt->y, landmark_opt->z)
+        );
+
+        // Check all 4 corners
+        double s = landmark_opt->size / 2.0;
+        const std::array<gtsam::Point3, 4> corners_local = {
+            gtsam::Point3(-s, -s, 0.0),
+            gtsam::Point3( s, -s, 0.0),
+            gtsam::Point3( s,  s, 0.0),
+            gtsam::Point3(-s,  s, 0.0),
+        };
+
+        for (const auto& corner : corners_local) {
+            total_corners++;
+            gtsam::Point3 world_point = tag_pose_world.transformFrom(corner);
+            gtsam::Point2 projected;
+
+            if (!projectPoint(camera_pose, intrinsics, world_point, &projected)) {
+                failed_projections++;
+            }
+        }
+    }
+
+    // If all (or nearly all) projections failed, try 180° flip
+    if (total_corners > 0 && failed_projections >= total_corners) {
+        // Apply 180° heading flip
+        gtsam::Pose2 flipped_pose(current_pose.x(), current_pose.y(),
+                                  current_pose.theta() + M_PI);
+
+        // Reset horizon with flipped pose
+        resetHorizonWithPrior(flipped_pose, prior_noise_);
+        current_pose_ = flipped_pose;
+        last_solved_pose_ = flipped_pose;
+
+        return true;
+    }
+
+    return false;
 }
 
 } // namespace decode
